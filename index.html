@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>RIVAL Gym · Disciplina hoy, resultados siempre</title>
+  <meta name="description" content="RIVAL Gym. Consulta el estado de tu membresía, planes, horarios y ubicación.">
+  <meta name="theme-color" content="#0a0a0c">
+  <link rel="manifest" href="manifest-index.webmanifest">
+  <link rel="icon" href="assets/img/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta property="og:title" content="RIVAL Gym">
+  <meta property="og:description" content="Disciplina hoy, resultados siempre.">
+  <meta property="og:image" content="assets/img/hero.jpg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/index.css">
+  <script>try{var t=JSON.parse(localStorage.getItem("rival.theme")||"null");if(t&&t.primary)document.documentElement.style.setProperty("--brand",t.primary);if(t&&t.bg)document.documentElement.style.setProperty("--bg",t.bg)}catch(e){}</script>
+</head>
+<body>
+  <a class="skip" href="#consulta">Ir a consultar mi membresía</a>
+
+  <header class="nav" id="nav">
+    <a href="#inicio" class="nav-brand" aria-label="RIVAL inicio"><span class="nav-logo" data-logo></span><span class="nav-word" data-wordmark></span></a>
+    <nav class="nav-links" id="navLinks">
+      <a href="#inicio" class="on">Inicio</a>
+      <a href="#membresias">Membresías</a>
+      <a href="#nosotros">Nosotros</a>
+      <a href="#horarios">Horarios</a>
+      <a href="#contacto">Contacto</a>
+    </nav>
+    <div class="row">
+      <a href="#consulta" class="btn primary sm nav-cta">Mi membresía</a>
+      <button class="btn ghost icon nav-burger" id="burger" aria-label="Abrir menú" aria-expanded="false"></button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" id="inicio">
+      <picture class="hero-bg">
+        <source media="(max-width: 760px)" srcset="assets/img/hero-mobile.jpg">
+        <img src="assets/img/hero.jpg" alt="Equipo de RIVAL Gym entrenando" fetchpriority="high">
+      </picture>
+      <div class="hero-grid" aria-hidden="true"></div>
+      <div class="hero-inner">
+        <div class="hero-logo" data-logo3d></div>
+        <h1 class="hero-word"><span class="sr-only">RIVAL</span><span data-wordmark-big></span></h1>
+        <p class="hero-slogan display" data-slogan>Disciplina hoy<br>Resultados siempre</p>
+        <span class="hero-rule"></span>
+        <div class="hero-cta">
+          <a href="#consulta" class="btn primary lg">Consultar mi membresía</a>
+          <a href="#contacto" class="btn outline lg">Contáctanos</a>
+        </div>
+        <div class="socials" data-socials></div>
+      </div>
+      <a href="#consulta" class="scroll-hint" aria-label="Bajar"><span></span></a>
+    </section>
+
+    <section class="section" id="consulta">
+      <div class="wrap check-grid">
+        <div class="reveal">
+          <div class="eyebrow">Portal de socios</div>
+          <h2 class="h2">Consulta tu membresía</h2>
+          <p class="muted lead">Escribe tu ID de socio (lo encuentras en tu credencial o en tu ticket, ej. <b>RIV-00284</b> o solo <b>284</b>) para ver si tu acceso está activo y cuándo vence.</p>
+          <form class="check-form" id="checkForm" autocomplete="off">
+            <label class="sr-only" for="memberId">ID de socio</label>
+            <input class="input big" id="memberId" name="id" inputmode="text" placeholder="RIV-00000" maxlength="12" required>
+            <button class="btn primary lg" type="submit">Consultar</button>
+          </form>
+          <label class="check small muted" style="margin-top:14px"><input type="checkbox" id="remember"> Recordar mi ID en este dispositivo</label>
+          <p class="dim xs" style="margin-top:10px">Por tu privacidad solo mostramos tu nombre abreviado y el estado de tu acceso.</p>
+        </div>
+        <div class="reveal" id="result">
+          <div class="member-card idle tilt">
+            <div class="mc-top"><span class="mc-logo" data-logo></span><span class="badge plain">Credencial digital</span></div>
+            <div class="mc-ring">
+              <svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="ring-bg"/><circle cx="60" cy="60" r="52" class="ring-fg" stroke-dasharray="326.7" stroke-dashoffset="326.7"/></svg>
+              <div class="ring-label"><b>—</b><span>días</span></div>
+            </div>
+            <div class="mc-name">Tu nombre aquí</div>
+            <div class="mc-meta dim small">Ingresa tu ID para ver tu estado</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt" id="membresias">
+      <div class="wrap">
+        <div class="section-head reveal">
+          <div class="eyebrow">Planes</div>
+          <h2 class="h2">Membresías</h2>
+          <p class="muted lead">Entrena a tu ritmo. Sin letras chiquitas.</p>
+        </div>
+        <div class="plans" id="plans"></div>
+      </div>
+    </section>
+
+    <section class="section" id="nosotros">
+      <div class="wrap about">
+        <div class="about-media reveal tilt"><img src="assets/img/hero-mobile.jpg" alt="Atletas de RIVAL Gym" loading="lazy"></div>
+        <div class="reveal">
+          <div class="eyebrow">Nosotros</div>
+          <h2 class="h2" data-gymname>RIVAL Gym</h2>
+          <p class="muted lead" data-about>Un gimnasio para quienes compiten contra su mejor versión. Equipo de fuerza de alto nivel, zona de peso libre, cardio y una comunidad que empuja.</p>
+          <div class="features">
+            <div class="feature"><span data-ico="dumbbell"></span><div><b>Peso libre y máquinas</b><p class="dim small">Racks, plataformas y equipo de fuerza.</p></div></div>
+            <div class="feature"><span data-ico="finger"></span><div><b>Acceso con huella</b><p class="dim small">Entra en un segundo, sin tarjetas.</p></div></div>
+            <div class="feature"><span data-ico="users"></span><div><b>Comunidad</b><p class="dim small">Entrenadores y socios que te empujan.</p></div></div>
+            <div class="feature"><span data-ico="shield"></span><div><b>Limpieza diaria</b><p class="dim small">Checklist de mantenimiento todos los días.</p></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt" id="horarios">
+      <div class="wrap two">
+        <div class="card pad-lg reveal tilt">
+          <div class="row" style="margin-bottom:14px"><span class="ico-chip" data-ico="clock"></span><h3>Horarios</h3></div>
+          <ul class="hours" id="hours"></ul>
+        </div>
+        <div class="card pad-lg reveal tilt" id="contacto">
+          <div class="row" style="margin-bottom:14px"><span class="ico-chip" data-ico="map"></span><h3>Ubicación y contacto</h3></div>
+          <p class="muted" data-address>—</p>
+          <div class="contact-actions" id="contactActions"></div>
+          <div class="map-embed" id="mapEmbed" hidden></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-in">
+      <div class="row"><span class="nav-logo" data-logo></span><span class="dim small">© <span id="year"></span> <span data-gymname>RIVAL Gym</span></span></div>
+      <div class="socials sm" data-socials></div>
+    </div>
+  </footer>
+
+  <div class="install-bar" id="installBar" hidden>
+    <span class="nav-logo" data-logo></span>
+    <div class="grow"><b>Instala RIVAL</b><div class="dim xs">Consulta tu membresía desde tu pantalla de inicio.</div></div>
+    <button class="btn primary sm" id="installBtn">Instalar</button>
+    <button class="btn ghost sm icon" id="installClose" aria-label="Cerrar"></button>
+  </div>
+
+  <script type="module" src="js/index.js"></script>
+</body>
+</html>

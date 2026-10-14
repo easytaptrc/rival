@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>RIVAL · Insumos</title>
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#0a0a0c">
+  <link rel="manifest" href="manifest-insumos.webmanifest">
+  <link rel="icon" href="assets/img/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/admin.css">
+  <style>
+    .ins { width: min(760px, 100%); margin: 0 auto; padding: 0 16px calc(96px + env(safe-area-inset-bottom)); display: grid; gap: 18px; }
+    .ins-top { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; margin: 0 -16px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+    .tabbar { position: fixed; z-index: 40; left: 50%; transform: translateX(-50%); bottom: calc(12px + env(safe-area-inset-bottom)); display: flex; gap: 4px; padding: 6px; border-radius: 20px; background: color-mix(in srgb, var(--surface-2) 92%, transparent); backdrop-filter: blur(14px); border: 1px solid var(--line-2); box-shadow: var(--shadow); }
+    .tabbar button { position: relative; display: grid; justify-items: center; gap: 2px; min-width: 76px; padding: 8px 10px; border: 0; border-radius: 14px; background: none; color: var(--text-3); font-size: 11px; font-weight: 600; cursor: pointer; transition: .2s; }
+    .tabbar button svg { width: 21px; height: 21px; }
+    .tabbar button.on { background: var(--brand); color: #fff; box-shadow: 0 8px 20px -8px var(--brand); }
+    .tabbar .count { position: absolute; top: 2px; right: 12px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #fff; color: var(--brand); font-size: 10.5px; font-weight: 800; display: grid; place-items: center; }
+    .tabbar button:not(.on) .count { background: var(--brand); color: #fff; }
+    .kpis3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .kpis3 .card { padding: 16px; }
+    .kpis3 b { font-size: 30px; font-weight: 800; display: block; line-height: 1.1; }
+    .kpis3 span { font-size: 12.5px; font-weight: 700; }
+    .menu-pop { position: absolute; right: 16px; top: 64px; z-index: 50; width: 260px; padding: 8px; border-radius: 16px; background: var(--surface-2); border: 1px solid var(--line-2); box-shadow: var(--shadow); animation: rise .25s var(--ease); }
+    .menu-pop button { width: 100%; justify-content: flex-start; }
+  </style>
+  <script>try{var t=JSON.parse(localStorage.getItem("rival.theme")||"null");if(t&&t.primary)document.documentElement.style.setProperty("--brand",t.primary);if(t&&t.bg)document.documentElement.style.setProperty("--bg",t.bg)}catch(e){}</script>
+</head>
+<body>
+  <div id="app"><div class="boot"><div class="skeleton" style="width:56px;height:56px;border-radius:16px"></div></div></div>
+  <script type="module" src="js/insumos.js"></script>
+</body>
+</html>

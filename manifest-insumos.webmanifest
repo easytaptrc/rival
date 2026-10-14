@@ -1,0 +1,19 @@
+{
+  "name": "RIVAL · Insumos",
+  "short_name": "RIVAL Insumos",
+  "description": "Solicitudes de recepción y checklist de mantenimiento.",
+  "id": "./insumos.html",
+  "start_url": "./insumos.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0a0c",
+  "theme_color": "#0a0a0c",
+  "lang": "es-MX",
+  "icons": [
+    { "src": "assets/img/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/img/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "assets/img/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "assets/img/logo.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
