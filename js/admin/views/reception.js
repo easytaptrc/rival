@@ -3,11 +3,14 @@ import { $, esc, icon, modal, toast, fmtDate, fmtMoney, fmtTime, initials, enabl
 import { state, processScan, statusOf, fullName, dayRange, db, collection, query, where, orderBy, limit, onSnapshot } from "../data.js";
 import { ROLES } from "../../core/auth.js";
 import * as D from "../dialogs.js";
+import { REQ_STATUS, reqItems, reqSummary } from "../../core/supplies.js";
 
 export async function render(el, { profile, perms }) {
   el.innerHTML = `
     <div class="page-head fade-in"><div><div class="eyebrow">Recepción</div><h1>Mostrador</h1><p>Atiende socios, cobra y controla el acceso.</p></div>
       <div class="row wrap">
+        <button class="btn" data-a="rivalListDialog">${icon("star")} Lista Rival</button>
+        <button class="btn" data-a="cashCutDialog">${icon("receipt")} Hacer corte</button>
         <button class="btn" data-a="requestDialog">${icon("box")} Pedir insumos</button>
         <button class="btn outline" data-a="manualOpen">${icon("door")} Abrir torniquete</button>
       </div></div>
@@ -37,6 +40,8 @@ export async function render(el, { profile, perms }) {
   enableTilt(el);
 
   el.addEventListener("click", (e) => {
+    const cf = e.target.closest("[data-confirm]");
+    if (cf) return D.confirmReceipt(cf.dataset.confirm);
     const rc = e.target.closest("[data-renew-code]");
     if (rc) return D.renewDialog(rc.dataset.renewCode);
     const a = e.target.closest("[data-a]");
@@ -90,9 +95,11 @@ export async function render(el, { profile, perms }) {
 
   // ----- Mis solicitudes -----
   const u3 = onSnapshot(query(collection(db, "requests"), orderBy("createdAt", "desc"), limit(40)), (snap) => {
-    const mine = snap.docs.map((d) => d.data()).filter((r) => r.createdBy === profile.uid).slice(0, 6);
-    const lab = { pendiente: ["bad", "Pendiente"], en_curso: ["warn", "En curso"], entregada: ["ok", "Entregada"], cancelada: ["plain", "Cancelada"] };
-    el.querySelector("[data-reqs]").innerHTML = mine.map((r) => `<div class="list-item"><span class="li-ico">${icon("box")}</span><div class="grow"><b>${esc(r.item)}</b><div class="dim xs">${r.qty} ${esc(r.unit || "")} · ${fmtTime(r.createdAt)}${r.takenByName ? ` · ${esc(r.takenByName)}` : ""}</div></div><span class="badge ${lab[r.status]?.[0]}">${lab[r.status]?.[1] || r.status}</span></div>`).join("") || `<div class="empty">${icon("box")}Sin solicitudes recientes.</div>`;
+    const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    // Primero lo que espera confirmación (de cualquier recepcionista), luego mis solicitudes
+    const mine = [...all.filter((r) => r.status === "entregada"), ...all.filter((r) => r.createdBy === profile.uid && r.status !== "entregada")].slice(0, 7);
+    el.querySelector("[data-reqs]").innerHTML = mine.map((r) => `<div class="list-item"><span class="li-ico">${icon("box")}</span><div class="grow"><b>${esc(r.item)}</b><div class="dim xs">${esc(reqSummary(reqItems(r)))} · ${fmtTime(r.createdAt)}${r.takenByName ? ` · ${esc(r.takenByName)}` : ""}</div></div>
+      ${r.status === "entregada" ? `<button class="btn primary sm" data-confirm="${r.id}">${icon("check")} Confirmar</button>` : `<span class="badge ${REQ_STATUS[r.status]?.[0]}">${REQ_STATUS[r.status]?.[1] || r.status}</span>`}</div>`).join("") || `<div class="empty">${icon("box")}Sin solicitudes recientes.</div>`;
   }, () => {});
 
   return () => { clearInterval(iv); u1(); u2(); u3(); };

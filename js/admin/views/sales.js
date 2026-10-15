@@ -2,7 +2,7 @@
 import { esc, icon, fmtMoney, fmtDateTime, toast, confirmDialog, downloadFile, toCSV, modal } from "../../core/ui.js";
 import { ymd, addDays, parseYmd } from "../../core/membership.js";
 import { audit } from "../../core/auth.js";
-import { state, salesBetween, db, doc, updateDoc, serverTimestamp } from "../data.js";
+import { state, salesBetween, db, doc, updateDoc, serverTimestamp, collection, query, where, orderBy, limit, onSnapshot } from "../data.js";
 import * as D from "../dialogs.js";
 
 const TYPES = { inscripcion: "Inscripción", renovacion: "Renovación", visita: "Visita", producto: "Producto" };
@@ -12,14 +12,17 @@ export async function render(el, { profile }) {
   const canVoid = ["dueno", "gerente"].includes(profile.role);
   el.innerHTML = `
     <div class="page-head fade-in"><div><div class="eyebrow">Caja</div><h1>Ventas y caja</h1><p>Movimientos, formas de pago y corte</p></div>
-      <div class="row wrap"><button class="btn" data-cut>${icon("clipboard")} Corte de caja</button><button class="btn primary" data-sale>${icon("plus")} Nueva venta</button></div></div>
+      <div class="row wrap">${canVoid ? `<button class="btn" data-cut>${icon("clipboard")} Resumen del periodo</button>` : ""}<button class="btn" data-mycut>${icon("receipt")} Hacer corte</button><button class="btn primary" data-sale>${icon("plus")} Nueva venta</button></div></div>
+    <div class="seg fade-in" data-ptabs style="justify-self:start"><button class="on" data-p="ventas">Ventas</button><button data-p="cortes">${canVoid ? "Cortes de caja del equipo" : "Mis cortes"}</button></div>
+    <div data-cuts-pane hidden></div>
+    <div class="stack" style="gap:20px" data-sales-pane>
     <div class="toolbar fade-in">
       <div class="seg" data-quick><button class="on" data-r="hoy">Hoy</button><button data-r="ayer">Ayer</button><button data-r="7">7 días</button><button data-r="mes">Este mes</button></div>
       <input type="date" class="input" style="width:auto" data-from value="${from}"><span class="dim">a</span><input type="date" class="input" style="width:auto" data-to value="${to}">
       <button class="btn ghost" data-export>${icon("download")} CSV</button>
     </div>
     <div class="grid g4 stagger" data-kpis></div>
-    <div class="card fade-in"><div class="table-wrap"><table class="table"><thead><tr><th>Fecha</th><th>Concepto</th><th class="hide-sm">Socio</th><th>Pago</th><th class="hide-sm">Atendió</th><th style="text-align:right">Monto</th>${canVoid ? "<th></th>" : ""}</tr></thead><tbody data-rows></tbody></table></div></div>`;
+    <div class="card fade-in"><div class="table-wrap"><table class="table"><thead><tr><th>Fecha</th><th>Concepto</th><th class="hide-sm">Socio</th><th>Pago</th><th class="hide-sm">Atendió</th><th style="text-align:right">Monto</th>${canVoid ? "<th></th>" : ""}</tr></thead><tbody data-rows></tbody></table></div></div></div>`;
 
   const load = async () => {
     el.querySelector("[data-rows]").innerHTML = `<tr><td colspan="7"><div class="skeleton" style="height:120px"></div></td></tr>`;
@@ -65,8 +68,63 @@ export async function render(el, { profile }) {
     audit("sale.void", { id: b.dataset.void });
     toast("Venta cancelada.", "ok"); load();
   });
-  el.querySelector("[data-cut]").onclick = () => cashCut(valid(), from, to);
+  el.querySelector("[data-cut]")?.addEventListener("click", () => cashCut(valid(), from, to));
+  el.querySelector("[data-mycut]").onclick = () => D.cashCutDialog();
+
+  // ----- Cortes de caja -----
+  let unsubCuts = null;
+  el.querySelector("[data-ptabs]").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-p]"); if (!b) return;
+    el.querySelectorAll("[data-ptabs] [data-p]").forEach((x) => x.classList.toggle("on", x === b));
+    const cuts = b.dataset.p === "cortes";
+    el.querySelector("[data-sales-pane]").hidden = cuts;
+    el.querySelector("[data-cuts-pane]").hidden = !cuts;
+    if (cuts && !unsubCuts) unsubCuts = watchCuts(el.querySelector("[data-cuts-pane]"), profile, canVoid);
+  });
   load();
+  return () => unsubCuts?.();
+}
+
+function watchCuts(pane, profile, all) {
+  pane.innerHTML = `<div class="card"><div class="skeleton" style="height:160px"></div></div>`;
+  const q = all ? query(collection(db, "cashCuts"), orderBy("at", "desc"), limit(120))
+    : query(collection(db, "cashCuts"), where("by", "==", profile.uid), orderBy("at", "desc"), limit(60));
+  let cuts = [];
+  pane.onclick = (e) => { const r = e.target.closest("[data-cut-id]"); if (r) cutDetail(cuts.find((c) => c.id === r.dataset.cutId)); };
+  return onSnapshot(q, (s) => {
+    cuts = s.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const today = new Date().toDateString();
+    const hoy = cuts.filter((c) => c.at?.toDate?.().toDateString() === today);
+    const sum = (a, f) => a.reduce((t, c) => t + (Number(f(c)) || 0), 0);
+    pane.innerHTML = `<div class="grid g4 stagger" style="margin-bottom:18px">
+        <div class="card kpi"><span class="k-label">Cortes hoy</span><span class="k-value">${hoy.length}</span></div>
+        <div class="card kpi"><span class="k-label">Total cortado hoy</span><span class="k-value">${fmtMoney(sum(hoy, (c) => c.totals?.total))}</span></div>
+        <div class="card kpi"><span class="k-label">Efectivo hoy</span><span class="k-value">${fmtMoney(sum(hoy, (c) => c.totals?.efectivo))}</span></div>
+        <div class="card kpi"><span class="k-label">Diferencias hoy</span><span class="k-value" style="color:var(--${sum(hoy, (c) => c.diff) < 0 ? "bad" : "ok"})">${fmtMoney(sum(hoy, (c) => c.diff))}</span></div></div>
+      <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Fecha y hora</th><th>Usuario</th><th class="hide-sm">Periodo</th><th class="hide-sm">Ventas</th><th>Total</th><th>Caja</th><th></th></tr></thead><tbody>
+      ${cuts.map((c) => `<tr class="click" data-cut-id="${c.id}"><td><b>${fmtDateTime(c.at)}</b></td><td>${esc(c.byName)}</td><td class="hide-sm dim small">desde ${fmtDateTime(c.from)}</td>
+        <td class="hide-sm mono">${c.count}</td><td class="mono"><b>${fmtMoney(c.totals?.total)}</b></td>
+        <td>${!c.diff ? `<span class="badge ok">Cuadra</span>` : `<span class="badge ${c.diff < 0 ? "bad" : "warn"}">${c.diff < 0 ? "Faltan" : "Sobran"} ${fmtMoney(Math.abs(c.diff))}</span>`}</td><td>${icon("chevron").replace("<svg", '<svg style="width:18px"')}</td></tr>`).join("")
+        || `<tr><td colspan="7"><div class="empty">${icon("receipt")}Aún no hay cortes registrados.</div></td></tr>`}</tbody></table></div></div>`;
+  }, (e) => (pane.innerHTML = `<div class="card"><div class="empty">No se pudieron cargar los cortes (${esc(e.code)}).</div></div>`));
+}
+
+function cutDetail(c) {
+  if (!c) return;
+  const row = (a, b) => `<div class="row"><span class="muted">${a}</span><b class="mono">${b}</b></div>`;
+  const m = modal({
+    title: `Corte de ${c.byName}`, wide: true,
+    body: `<div class="stack">
+      <div class="kv"><div><span>Hecho</span><b>${fmtDateTime(c.at)}</b></div><div><span>Periodo</span><b>${fmtDateTime(c.from)} → ${fmtDateTime(c.at)}</b></div></div>
+      <div class="grid g2"><div class="summary-box">${row("Efectivo", fmtMoney(c.totals?.efectivo))}${row("Tarjeta", fmtMoney(c.totals?.tarjeta))}${row("Transferencia", fmtMoney(c.totals?.transferencia))}<div class="row" style="border-top:1px solid var(--line);padding-top:8px"><span>Total (${c.count} ventas)</span><span class="total mono">${fmtMoney(c.totals?.total)}</span></div></div>
+      <div class="summary-box">${Object.entries(TYPES).map(([k, l]) => row(l, `${c.byType?.[k]?.n || 0} · ${fmtMoney(c.byType?.[k]?.amount || 0)}`)).join("")}</div></div>
+      <div class="summary-box">${row("Efectivo esperado", fmtMoney(c.totals?.efectivo))}${row("Efectivo contado", fmtMoney(c.cashCounted))}<div class="row"><span class="muted">Diferencia</span><b class="mono" style="color:var(--${!c.diff ? "ok" : c.diff < 0 ? "bad" : "warn"})">${!c.diff ? "Cuadra" : `${c.diff < 0 ? "Faltante" : "Sobrante"} ${fmtMoney(Math.abs(c.diff))}`}</b></div>${c.note ? `<div class="dim small">Nota: ${esc(c.note)}</div>` : ""}</div>
+      <div><div class="label" style="margin-bottom:8px">Desglose de ventas</div><div class="table-wrap" style="max-height:300px;overflow:auto"><table class="table"><thead><tr><th>Hora</th><th>Concepto</th><th>Socio</th><th>Pago</th><th style="text-align:right">Monto</th></tr></thead><tbody>
+      ${(c.sales || []).map((x) => `<tr><td class="mono small">${x.at ? new Date(x.at).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "—"}</td><td>${esc(x.concept)}</td><td class="small">${esc(x.memberName || "")}</td><td>${esc(x.method)}</td><td class="mono" style="text-align:right">${fmtMoney(x.amount)}</td></tr>`).join("") || `<tr><td colspan="5" class="dim">Sin ventas en este corte.</td></tr>`}
+      </tbody></table></div></div></div>`,
+    foot: `<button class="btn ghost" data-close>Cerrar</button><button class="btn primary" data-print>${icon("download")} Imprimir</button>`,
+  });
+  m.$("[data-print]").onclick = () => D.printCut({ ...c, at: c.at?.toDate?.() || new Date(), from: c.from?.toDate?.() || c.from });
 }
 
 function cashCut(rows, from, to) {

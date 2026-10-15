@@ -79,7 +79,7 @@ export async function createMember(data, sale) {
       tx.set(doc(collection(db, "sales")), {
         type: "inscripcion", concept: `Inscripción · ${sale.plan.name}`, amount: Number(sale.amount) || 0, method: sale.method,
         memberCode: code, memberName: `${m.firstName} ${m.lastName}`.trim(), planId: sale.plan.id, periodStart: p.start, periodEnd: p.end,
-        note: sale.note || "", day: ymd(), at: serverTimestamp(), ...me(),
+        note: sale.note || "", benefit: sale.benefit || null, day: ymd(), at: serverTimestamp(), ...me(),
       });
     }
     tx.set(doc(db, "members", code), m);
@@ -101,7 +101,7 @@ export async function updateMember(code, patch) {
 }
 
 /** Renovación / venta de plan a un socio existente. Encadena el periodo si sigue vigente. */
-export async function sellPlan(code, plan, { amount, method, note = "" }) {
+export async function sellPlan(code, plan, { amount, method, note = "", benefit = null }) {
   const ref = doc(db, "members", code);
   return runTransaction(db, async (tx) => {
     const cur = (await tx.get(ref)).data();
@@ -114,7 +114,7 @@ export async function sellPlan(code, plan, { amount, method, note = "" }) {
     tx.set(doc(collection(db, "sales")), {
       type: cur.end ? "renovacion" : "inscripcion", concept: `${cur.end ? "Renovación" : "Membresía"} · ${plan.name}`,
       amount: Number(amount) || 0, method, memberCode: code, memberName: `${cur.firstName} ${cur.lastName}`.trim(),
-      planId: plan.id, periodStart: p.start, periodEnd: p.end, note, day: ymd(), at: serverTimestamp(), ...me(),
+      planId: plan.id, periodStart: p.start, periodEnd: p.end, note, benefit, day: ymd(), at: serverTimestamp(), ...me(),
     });
     return { ...cur, ...patch };
   });
@@ -216,8 +216,8 @@ export async function accessBetween(from, to, max = 2000) {
   const s = await getDocs(query(collection(db, "access"), where("at", ">=", from), where("at", "<", to), orderBy("at", "desc"), limit(max)));
   return s.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
-export async function attendanceBetween(from, to) {
-  const s = await getDocs(query(collection(db, "attendance"), where("at", ">=", from), where("at", "<", to), orderBy("at", "desc"), limit(2000)));
+export async function attendanceBetween(from, to, max = 10000) {
+  const s = await getDocs(query(collection(db, "attendance"), where("at", ">=", from), where("at", "<", to), orderBy("at", "desc"), limit(max)));
   return s.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 export function dayRange(d = new Date()) {
@@ -226,4 +226,4 @@ export function dayRange(d = new Date()) {
   return [a, b];
 }
 
-export { db, doc, getDoc, setDoc, updateDoc, addDoc, collection, query, where, orderBy, limit, getDocs, onSnapshot, serverTimestamp, writeBatch };
+export { auth, db, doc, getDoc, setDoc, updateDoc, addDoc, collection, query, where, orderBy, limit, getDocs, onSnapshot, serverTimestamp, writeBatch, runTransaction, increment };

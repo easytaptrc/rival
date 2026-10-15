@@ -1,5 +1,5 @@
 // Service worker RIVAL: caché offline del cascarón de la app, notificaciones y push (FCM opcional).
-const VERSION = "rival-v1";
+const VERSION = "rival-v2";
 const SHELL = [
   "./", "./index.html", "./admin.html", "./insumos.html",
   "./css/base.css", "./css/index.css", "./css/admin.css",

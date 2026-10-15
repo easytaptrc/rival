@@ -4,6 +4,7 @@ import { $, $$, h, esc, icon, brandMark, applyTheme, applyCachedTheme, toast, re
 import { mountAuth, permsOf, logout, ROLES } from "./core/auth.js";
 import { registerPush } from "./core/push.js";
 import { ymd } from "./core/membership.js";
+import { REQ_STATUS, reqItems, reqTitle } from "./core/supplies.js";
 
 applyCachedTheme();
 registerSW();
@@ -12,6 +13,7 @@ const root = $("#app");
 let profile, unsubs = [], tab = "solicitudes";
 let requests = [], inventory = [], checklist = null, firstLoad = true;
 const knownIds = new Set();
+const prevStatus = new Map();
 
 mountAuth({
   root,
@@ -47,10 +49,19 @@ function start(p) {
     // Notificar solicitudes nuevas (no las que ya existían al abrir)
     snap.docChanges().forEach((c) => {
       if (c.type === "added" && !firstLoad && !knownIds.has(c.doc.id) && c.doc.data().status === "pendiente" && c.doc.data().createdBy !== profile.uid) {
-        const r = c.doc.data();
-        notify(r.priority === "alta" ? "⚡ Solicitud URGENTE de recepción" : "Nueva solicitud de recepción", `${r.item} · ${r.qty} ${r.unit || ""}${r.note ? ` — ${r.note}` : ""}`, { tag: `req-${c.doc.id}`, url: "insumos.html" });
-        toast(`${r.item} · ${r.qty} ${r.unit || ""}`, "warn", `Nueva solicitud de ${r.createdByName}`);
+        const r = c.doc.data(), its = reqItems(r);
+        const txt = its.map((i) => `${i.qty} ${i.unit || ""} ${i.name}`).join(", ");
+        notify(r.priority === "alta" ? "⚡ Solicitud URGENTE de recepción" : "Nueva solicitud de recepción", `${txt}${r.note ? ` — ${r.note}` : ""}`, { tag: `req-${c.doc.id}`, url: "insumos.html" });
+        toast(txt, "warn", `Nueva solicitud de ${r.createdByName}`);
       }
+      // Recepción confirmó con faltantes: avisar a bodega
+      if (c.type === "modified" && !firstLoad && c.doc.data().status === "recibida" && c.doc.data().incomplete && prevStatus.get(c.doc.id) === "entregada") {
+        const r = c.doc.data();
+        const falt = (r.receivedItems || []).filter((x) => x.received < x.delivered).map((x) => `${x.delivered - x.received} ${x.name}`).join(", ");
+        notify("Recepción reportó entrega incompleta", `${r.item}: faltó ${falt}`, { tag: `inc-${c.doc.id}`, url: "insumos.html" });
+        toast(`Faltó: ${falt}`, "bad", `${r.receivedByName} recibió incompleto`);
+      }
+      prevStatus.set(c.doc.id, c.doc.data().status);
       knownIds.add(c.doc.id);
     });
     firstLoad = false;
@@ -109,13 +120,14 @@ function paint() {
 }
 
 // ---------- Solicitudes ----------
-const LAB = { pendiente: ["bad", "Pendiente"], en_curso: ["warn", "En curso"], entregada: ["ok", "Entregada"], cancelada: ["plain", "Cancelada"] };
+const LAB = { ...REQ_STATUS, entregada: ["ok", "Entregada"] };
 function reqCard(r, fresh) {
   const mine = r.takenBy === profile.uid;
   return `<article class="req ${fresh ? "new" : ""}" data-id="${r.id}">
-    <div class="req-top"><div><h4 class="${r.priority === "alta" ? "prio-alta" : ""}">${r.priority === "alta" ? "⚡ " : ""}${esc(r.item)}</h4>
-      <div class="dim xs" style="margin-top:4px">${r.qty} ${esc(r.unit || "")} · ${timeAgo(r.createdAt)} · ${esc(r.createdByName || "Recepción")}${r.area ? ` · ${esc(r.area)}` : ""}</div></div>
+    <div class="req-top"><div><h4 class="${r.priority === "alta" ? "prio-alta" : ""}">${r.priority === "alta" ? "⚡ " : ""}${esc(reqTitle(reqItems(r)))}</h4>
+      <div class="dim xs" style="margin-top:4px">${timeAgo(r.createdAt)} · ${esc(r.createdByName || "Recepción")}${r.area ? ` · ${esc(r.area)}` : ""}</div></div>
       <span class="badge ${LAB[r.status][0]}">${LAB[r.status][1]}</span></div>
+    <ul class="req-items">${reqItems(r).map((i) => `<li><b class="mono">${i.qty}</b> ${esc(i.unit || "")} · ${esc(i.name)}</li>`).join("")}</ul>
     ${r.note ? `<div class="small muted">${esc(r.note)}</div>` : ""}
     ${r.takenByName && r.status === "en_curso" ? `<div class="dim xs">Atiende: ${esc(r.takenByName)}</div>` : ""}
     <div class="req-actions">
@@ -127,7 +139,7 @@ function viewRequests() {
   const today = new Date().toDateString();
   const open = requests.filter((r) => r.status === "pendiente" || r.status === "en_curso")
     .sort((a, b) => (a.status === "en_curso" ? -1 : 0) - (b.status === "en_curso" ? -1 : 0) || (b.priority === "alta") - (a.priority === "alta") || (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
-  const delivered = requests.filter((r) => r.status === "entregada" && r.updatedAt?.toDate?.().toDateString() === today).length;
+  const delivered = requests.filter((r) => ["entregada", "recibida"].includes(r.status) && (r.deliveredAt || r.updatedAt)?.toDate?.().toDateString() === today).length;
   return `<div style="margin-top:18px"><div class="eyebrow">Mantenimiento</div><h1 style="font-size:28px;margin-top:6px">Solicitudes de insumos</h1><p class="dim small" style="margin:4px 0 0">Pedidos de recepción e inventario del gimnasio</p></div>
     <div class="kpis3 stagger" style="margin-top:18px">
       <div class="card"><b>${requests.filter((r) => r.status === "pendiente").length}</b><span style="color:var(--bad)">Pendientes</span></div>
@@ -184,9 +196,9 @@ function viewInventory() {
 
 // ---------- Historial ----------
 function viewHistory() {
-  const done = requests.filter((r) => r.status === "entregada" || r.status === "cancelada");
+  const done = requests.filter((r) => ["entregada", "recibida", "cancelada"].includes(r.status));
   return `<div style="margin-top:18px"><div class="eyebrow">Historial</div><h1 style="font-size:28px;margin-top:6px">Solicitudes cerradas</h1></div>
-    <div class="card"><div class="list">${done.map((r) => `<div class="list-item"><span class="li-ico">${icon(r.status === "entregada" ? "check" : "x")}</span><div class="grow"><b>${esc(r.item)}</b><div class="dim xs">${r.qty} ${esc(r.unit || "")} · pidió ${esc(r.createdByName || "")} · ${fmtDateTime(r.updatedAt)}${r.takenByName ? ` · ${esc(r.takenByName)}` : ""}${r.closeNote ? ` · “${esc(r.closeNote)}”` : ""}</div></div><span class="badge ${LAB[r.status][0]}">${LAB[r.status][1]}</span></div>`).join("") || `<div class="empty">Sin historial todavía.</div>`}</div></div>`;
+    <div class="card"><div class="list">${done.map((r) => `<div class="list-item"><span class="li-ico">${icon(r.status === "cancelada" ? "x" : "check")}</span><div class="grow"><b>${esc(r.item)}</b>${r.incomplete ? ` <span class="badge warn">Faltó: ${esc((r.receivedItems || []).filter((x) => x.received < x.delivered).map((x) => `${x.delivered - x.received} ${x.name}`).join(", "))}</span>` : ""}<div class="dim xs">${esc(reqItems(r).map((i) => `${i.delivered ?? i.qty} ${i.unit || ""} ${i.name}`).join(", "))} · pidió ${esc(r.createdByName || "")} · ${fmtDateTime(r.updatedAt)}${r.takenByName ? ` · ${esc(r.takenByName)}` : ""}${r.closeNote ? ` · “${esc(r.closeNote)}”` : ""}${r.receivedByName ? ` · recibió ${esc(r.receivedByName)}` : ""}</div></div><span class="badge ${LAB[r.status][0]}">${r.status === "entregada" ? "Por confirmar" : LAB[r.status][1]}</span></div>`).join("") || `<div class="empty">Sin historial todavía.</div>`}</div></div>`;
 }
 
 // ---------- Eventos ----------
@@ -196,8 +208,9 @@ document.addEventListener("click", async (e) => {
   const act = e.target.closest("[data-act]");
   if (act) {
     const id = act.closest("[data-id]").dataset.id, status = act.dataset.act;
+    if (status === "entregada") return deliverDialog(requests.find((r) => r.id === id));
     let closeNote = "";
-    if (status === "cancelada") { closeNote = prompt("¿Por qué no está disponible? (se le avisará a recepción)") ?? null; if (closeNote === null) return; }
+    if (status === "cancelada") { closeNote = await askText("No disponible", "¿Por qué? Se le avisará a recepción.", "Ej. no hay en bodega, llega el viernes"); if (closeNote === null) return; }
     const patch = { status, updatedAt: serverTimestamp() };
     if (status === "en_curso" || status === "entregada") Object.assign(patch, { takenBy: profile.uid, takenByName: profile.name });
     if (status === "pendiente") Object.assign(patch, { takenBy: null, takenByName: null });
@@ -250,5 +263,37 @@ function selfRequest() {
     const { addDoc } = await import("./firebase.js");
     await addDoc(collection(db, "requests"), { item: f.item, qty: Number(f.qty) || 1, unit: "piezas", priority: "normal", area: "Bodega", note: `Faltante de bodega${f.note ? ` · ${f.note}` : ""}`, status: "pendiente", createdBy: profile.uid, createdByName: profile.name, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
     toast("Faltante registrado.", "ok"); m.close();
+  });
+}
+
+// ---------- Entregar con cantidades reales por artículo ----------
+function deliverDialog(r) {
+  if (!r) return;
+  const items = reqItems(r);
+  const body = document.createElement("form");
+  body.className = "stack";
+  body.innerHTML = `<p class="muted small" style="margin:0">Confirma cuánto entregas de cada artículo. Después recepción confirmará lo que recibió.</p>
+    <div class="card checklist" style="padding:6px 16px">${items.map((i, k) => `<div class="ck-row" data-k="${k}"><div><b>${esc(i.name)}</b><div class="dim xs">Pidieron ${i.qty} ${esc(i.unit || "")}</div></div>
+      <div class="row"><input class="input mono" type="number" min="0" value="${i.qty}" data-qty style="width:84px;min-height:38px"><span class="dim xs" style="width:56px">${esc(i.unit || "")}</span></div></div>`).join("")}</div>
+    <label class="field"><span>Nota para recepción (opcional)</span><input class="input" name="note" placeholder="Ej. solo había 2 paquetes"></label>`;
+  const m = modal({ title: `Entregar · ${reqTitle(items)}`, body, foot: `<button class="btn ghost" data-close>Cancelar</button><button class="btn primary" data-s>${icon("check")} Marcar entregada</button>` });
+  m.$("[data-s]").onclick = () => busy(m.$("[data-s]"), async () => {
+    const out = items.map((i, k) => ({ ...i, delivered: Math.max(0, Number(body.querySelector(`[data-k="${k}"] [data-qty]`).value) || 0) }));
+    const note = body.note.value.trim();
+    await updateDoc(doc(db, "requests", r.id), { items: out, status: "entregada", takenBy: profile.uid, takenByName: profile.name, deliveredAt: serverTimestamp(), updatedAt: serverTimestamp(), ...(note ? { closeNote: note } : {}) })
+      .then(() => { beep("ok"); toast("Entregada. Recepción debe confirmar lo que recibió.", "ok"); m.close(); })
+      .catch((err) => toast(err.code === "permission-denied" ? "No tienes permiso para esta acción." : err.message, "bad"));
+  });
+}
+
+function askText(title, label, ph) {
+  return new Promise((resolve) => {
+    let val = null;
+    const body = document.createElement("form");
+    body.innerHTML = `<label class="field"><span>${esc(label)}</span><input class="input" name="t" placeholder="${esc(ph)}"></label>`;
+    const m = modal({ title, body, foot: `<button class="btn ghost" data-close>Cancelar</button><button class="btn primary" data-s>Enviar</button>`, onClose: () => resolve(val) });
+    const go = () => { val = body.t.value.trim(); m.close(); };
+    m.$("[data-s]").onclick = go;
+    body.addEventListener("submit", (e) => { e.preventDefault(); go(); });
   });
 }

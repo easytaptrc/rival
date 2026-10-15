@@ -18,6 +18,7 @@ const ROUTES = [
   { id: "inventario", label: "Inventario", ico: "clipboard", perm: "inventory", mod: () => import("./views/inventory.js") },
   { id: "personal", label: "Personal", ico: "staff", perm: "staff", mod: () => import("./views/staff.js") },
   { id: "reportes", label: "Reportes", ico: "chart", perm: "reports", mod: () => import("./views/reports.js") },
+  { id: "lista", label: "Lista gym", ico: "star", ownerOnly: true, mod: () => import("./views/rivallist.js") },
   { id: "configuracion", label: "Configuración", ico: "settings", perm: "settings", mod: () => import("./views/settings.js") },
 ];
 
@@ -44,6 +45,7 @@ async function start(profile) {
   watchAccessFeed();
   watchRequests();
   watchDevice();
+  watchCashCuts();
   onState((w) => { if (w === "pub") applyTheme(state.pub.colors || {}); });
   if (notifPermission() === "granted") registerPush(profile);
   // Asistencia automática al iniciar sesión (una vez por día y por usuario)
@@ -59,7 +61,7 @@ async function start(profile) {
   }, 1500);
 }
 
-function allowedRoutes() { return ROUTES.filter((r) => perms.has(r.perm)); }
+function allowedRoutes() { return ROUTES.filter((r) => (r.ownerOnly ? state.profile.role === "dueno" : perms.has(r.perm))); }
 
 function renderShell() {
   const p = state.profile;
@@ -200,11 +202,18 @@ function watchRequests() {
     let open = 0;
     snap.forEach((d) => {
       const r = d.data();
-      if (r.status === "pendiente" || r.status === "en_curso") open++;
+      if (["pendiente", "en_curso", "entregada"].includes(r.status)) open++;
       const prev = seen.get(d.id);
       if (!first && prev && prev !== r.status && r.createdBy === state.profile.uid) {
-        const msg = { en_curso: "Insumos tomó tu solicitud", entregada: "Tu solicitud fue entregada", cancelada: "Tu solicitud fue cancelada" }[r.status];
-        if (msg) { toast(`${r.item} · ${msg}`, r.status === "entregada" ? "ok" : "info", "Insumos"); notify(msg, `${r.item} (${r.qty || 1} ${r.unit || ""})`, { tag: `req-${d.id}`, url: "admin.html#/insumos" }); }
+        const msg = { en_curso: "Insumos tomó tu solicitud", entregada: "Bodega entregó tu solicitud: confirma lo que recibiste", cancelada: "Tu solicitud no está disponible" }[r.status];
+        if (msg) {
+          toast(`${r.item} · ${msg}`, r.status === "entregada" ? "ok" : "info", "Insumos");
+          notify(msg, `${r.item}${r.closeNote ? ` — ${r.closeNote}` : ""}`, { tag: `req-${d.id}`, url: "admin.html#/insumos" });
+          if (r.status === "entregada") import("./dialogs.js").then((D) => D.confirmReceipt(d.id));
+        }
+      }
+      if (!first && prev && prev !== r.status && r.status === "recibida" && r.incomplete && ["dueno", "gerente"].includes(state.profile.role)) {
+        toast(`${r.receivedByName} recibió incompleto: ${r.item}`, "warn", "Entrega incompleta");
       }
       seen.set(d.id, r.status);
     });
@@ -212,6 +221,24 @@ function watchRequests() {
     const c = $("[data-req-count]");
     if (c) { c.hidden = !open; c.textContent = open; }
   }, (e) => console.warn("requests", e.code)));
+}
+
+// ---------- Cortes de caja: el dueño/gerente ve al instante quién hizo corte, cuánto y a qué hora ----------
+function watchCashCuts() {
+  if (!["dueno", "gerente"].includes(state.profile.role)) return;
+  let first = true;
+  unsubs.push(onSnapshot(query(collection(db, "cashCuts"), orderBy("at", "desc"), limit(5)), (snap) => {
+    if (!first) snap.docChanges().forEach((ch) => {
+      const c = ch.doc.data();
+      if (ch.type !== "added" || c.by === state.profile.uid) return;
+      const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
+      const hora = new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+      const dif = c.diff ? ` · ${c.diff < 0 ? "faltante" : "sobrante"} ${money.format(Math.abs(c.diff))}` : " · caja cuadrada";
+      toast(`${money.format(c.totals?.total || 0)} a las ${hora}${dif}`, c.diff < 0 ? "warn" : "ok", `Corte de ${c.byName}`);
+      notify(`Corte de caja · ${c.byName}`, `${money.format(c.totals?.total || 0)} (${c.count} ventas) a las ${hora}${dif}`, { tag: `cut-${ch.doc.id}`, url: "admin.html#/ventas" });
+    });
+    first = false;
+  }, (e) => console.warn("cortes", e.code)));
 }
 
 // ---------- Estado del bridge del torniquete ----------

@@ -3,6 +3,7 @@ import { esc, icon, modal, toast, busy, confirmDialog, formData, fmtDate, fmtDat
 import { audit } from "../../core/auth.js";
 import { db, collection, query, orderBy, limit, onSnapshot, doc, getDocs, writeBatch, updateDoc, addDoc, serverTimestamp } from "../data.js";
 import { loadXLSX, exportXLSX } from "../xlsx.js";
+import { mountReceptionInventory } from "../recinv.js";
 
 const ALIASES = {
   name: ["articulo", "artículo", "nombre", "equipo", "item", "producto", "descripcion", "descripción", "concepto", "material"],
@@ -15,11 +16,28 @@ const ALIASES = {
 };
 const norm = (s) => String(s ?? "").trim().toLowerCase();
 
-export async function render(el, { profile, perms }) {
+export async function render(el, ctx) {
+  el.innerHTML = `<div class="seg fade-in" data-inv-tabs style="justify-self:start"><button class="on" data-t="gym">${icon("dumbbell")} Inventario gym</button><button data-t="recepcion">${icon("desk")} Inventario recepción</button></div><div class="stack" style="gap:20px" data-inv></div>`;
+  const box = el.querySelector("[data-inv]");
+  let clean = null;
+  const show = async (t) => {
+    clean?.(); clean = null;
+    if (t === "gym") clean = await renderGym(box, ctx);
+    else {
+      box.innerHTML = `<div class="page-head fade-in"><div><div class="eyebrow">Inventario</div><h1>Inventario de recepción</h1><p>Lo que recepción confirma de cada entrega de bodega se suma aquí automáticamente</p></div></div><div data-ri></div>`;
+      clean = mountReceptionInventory(box.querySelector("[data-ri]"));
+    }
+  };
+  el.querySelector("[data-inv-tabs]").addEventListener("click", (e) => { const b = e.target.closest("[data-t]"); if (!b) return; el.querySelectorAll("[data-inv-tabs] [data-t]").forEach((x) => x.classList.toggle("on", x === b)); show(b.dataset.t); });
+  await show("gym");
+  return () => clean?.();
+}
+
+async function renderGym(el, { profile, perms }) {
   const canEdit = ["dueno", "gerente"].includes(profile.role);
   let items = [], q = "";
   el.innerHTML = `
-    <div class="page-head fade-in"><div><div class="eyebrow">Inventario</div><h1>Inventario del gimnasio</h1><p>Sube el Excel con todo lo que debe haber en el gym; insumos lo revisa con un checklist diario</p></div>
+    <div class="page-head fade-in"><div><div class="eyebrow">Inventario</div><h1>Inventario del gym</h1><p>Sube el Excel con todo lo que debe haber en el gym; insumos lo revisa con un checklist diario</p></div>
       <div class="row wrap"><button class="btn" data-tpl>${icon("download")} Plantilla</button><button class="btn" data-xls>${icon("download")} Exportar</button>${canEdit ? `<button class="btn" data-add>${icon("plus")} Artículo</button><button class="btn primary" data-up>${icon("upload")} Subir Excel</button>` : ""}</div></div>
     <div class="grid g-main">
       <div class="card fade-in"><div class="card-head"><div><h3>Artículos</h3><p data-count></p></div><div class="search" style="position:relative;width:220px">${icon("search")}<input class="input" placeholder="Buscar" data-q style="padding-left:38px"></div></div>

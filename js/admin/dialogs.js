@@ -2,10 +2,37 @@
 import { $, esc, icon, modal, toast, busy, formData, fmtMoney, fmtDate, fmtDateTime, initials, confirmDialog, debounce } from "../core/ui.js";
 import { renewalPeriod, ymd } from "../core/membership.js";
 import { authError } from "../core/auth.js";
+import { reqItems, reqTitle, reqSummary, itemSlug } from "../core/supplies.js";
 import {
   state, plans, planById, statusOf, fullName, createMember, updateMember, sellPlan, registerSale, visitPayment, deleteMember,
-  openTurnstile, db, doc, getDoc, collection, query, where, orderBy, limit, getDocs, addDoc, serverTimestamp,
+  openTurnstile, db, doc, getDoc, updateDoc, collection, query, where, orderBy, limit, getDocs, addDoc, serverTimestamp,
+  writeBatch, increment,
 } from "./data.js";
+
+// ---------- Beneficios de la Lista Rival ----------
+export const CONCEPTS = { brothers: "Brothers", familia: "Familia", atleta: "Atleta", referencia: "Referencia", otro: "Otro" };
+export const prizeLabel = (d) => ({ 7: "1 semana gratis", 14: "2 semanas gratis", 30: "1 mes gratis" }[d] || `${d} días gratis`);
+export function benefitLabel(b) {
+  if (!b) return "";
+  if (b.type === "gratis") return "Acceso gratis";
+  if (b.type === "descuento") return `Descuento ${b.discount}%`;
+  return `Premio · ${prizeLabel(b.prizeDays)}`;
+}
+function priceWith(plan, b) {
+  if (!plan) return 0;
+  if (!b) return plan.price;
+  if (b.type === "gratis" || b.type === "premio") return 0;
+  return Math.round(plan.price * (1 - (Number(b.discount) || 0) / 100) * 100) / 100;
+}
+/** Beneficio que se guarda en la venta, a partir de un registro de la lista. */
+const benefitFrom = (e) => e && ({ listId: e.id, name: e.fullName, type: e.benefitType, discount: Number(e.discount) || 0, prizeDays: Number(e.prizeDays) || 0, referredBy: e.referredBy || "", concept: e.concept || "" });
+async function markListUsed(b, code) {
+  if (!b?.listId) return;
+  await updateDoc(doc(db, "rivalList", b.listId), {
+    enrolledCode: code, enrolledAt: serverTimestamp(), enrolledBy: state.profile.uid, enrolledByName: state.profile.name,
+    uses: increment(1), lastUsedAt: serverTimestamp(),
+  }).catch((e) => console.warn("lista", e.code));
+}
 
 const METHODS = [["efectivo", "Efectivo"], ["tarjeta", "Tarjeta"], ["transferencia", "Transferencia"]];
 const payPick = (name = "method", sel = "efectivo") => `<div class="seg pay-pick" role="radiogroup">${METHODS.map(([v, l]) => `<button type="button" data-pay="${v}" class="${v === sel ? "on" : ""}">${l}</button>`).join("")}</div><input type="hidden" name="${name}" value="${sel}">`;
@@ -15,7 +42,7 @@ function wirePay(root) {
     root.querySelector('input[name="method"]').value = b.dataset.pay;
   }));
 }
-const planPick = (sel, filter = () => true) => `<div class="plan-pick">${plans().filter(filter).map((p, i) => `<label><input type="radio" name="plan" value="${esc(p.id)}" ${(sel ? p.id === sel : i === 0) ? "checked" : ""}><div class="pp"><b>${esc(p.name)}</b><span>${fmtMoney(p.price)}</span><small>${p.days} día${p.days === 1 ? "" : "s"}</small></div></label>`).join("")}</div>`;
+const planPick = (sel, list = plans()) => `<div class="plan-pick">${list.map((p, i) => `<label><input type="radio" name="plan" value="${esc(p.id)}" ${(sel ? p.id === sel : i === 0) ? "checked" : ""}><div class="pp"><b>${esc(p.name)}</b><span>${fmtMoney(p.price)}</span><small>${p.days} día${p.days === 1 ? "" : "s"}</small></div></label>`).join("")}</div>`;
 
 // ---------- Selector de socio con búsqueda ----------
 export function memberSearchBox(onPick, placeholder = "Buscar por nombre, ID o teléfono") {
@@ -90,36 +117,48 @@ function photoField(initial = "") {
 }
 
 // ---------- Alta de socio ----------
-export function newMember() {
+/** Planes a mostrar según el beneficio: un premio fuerza su propio plan gratuito. */
+function plansFor(b) {
+  if (b?.type === "premio") return [{ id: `premio-${b.prizeDays}`, name: `Premio · ${prizeLabel(b.prizeDays)}`, days: b.prizeDays, price: 0 }];
+  return plans();
+}
+const benefitBox = (b) => b ? `<div class="notice info">${icon("star")}<div><b>Lista Rival · ${esc(benefitLabel(b))}</b><br>${esc(b.name)}${b.referredBy ? ` · lo registró ${esc(b.referredBy)}` : ""}${b.concept ? ` · ${esc(CONCEPTS[b.concept] || b.concept)}` : ""}</div></div>` : "";
+
+export function newMember(prefill = {}, benefit = null) {
+  const v = (k) => esc(prefill[k] || "");
+  const list = plansFor(benefit);
   const body = document.createElement("form");
   body.className = "stack";
-  body.innerHTML = `
+  body.innerHTML = `${benefitBox(benefit)}
     <div data-photo></div>
     <div class="grid-form">
-      <label class="field"><span>Nombre(s) *</span><input class="input" name="firstName" required autocomplete="off"></label>
-      <label class="field"><span>Apellidos</span><input class="input" name="lastName" autocomplete="off"></label>
-      <label class="field"><span>Teléfono</span><input class="input" name="phone" type="tel" inputmode="tel"></label>
-      <label class="field"><span>Correo</span><input class="input" name="email" type="email"></label>
-      <label class="field"><span>Fecha de nacimiento</span><input class="input" name="birthdate" type="date"></label>
-      <label class="field"><span>Contacto de emergencia</span><input class="input" name="emergency" placeholder="Nombre y teléfono"></label>
-      <label class="field full"><span>Notas (lesiones, observaciones)</span><input class="input" name="notes"></label>
+      <label class="field"><span>Nombre(s) *</span><input class="input" name="firstName" required autocomplete="off" value="${v("firstName")}"></label>
+      <label class="field"><span>Apellidos</span><input class="input" name="lastName" autocomplete="off" value="${v("lastName")}"></label>
+      <label class="field"><span>Teléfono</span><input class="input" name="phone" type="tel" inputmode="tel" value="${v("phone")}"></label>
+      <label class="field"><span>Correo</span><input class="input" name="email" type="email" value="${v("email")}"></label>
+      <label class="field"><span>Fecha de nacimiento</span><input class="input" name="birthdate" type="date" value="${v("birthdate")}"></label>
+      <label class="field"><span>Contacto de emergencia</span><input class="input" name="emergency" placeholder="Nombre y teléfono" value="${v("emergency")}"></label>
+      <label class="field full"><span>Notas (lesiones, observaciones)</span><input class="input" name="notes" value="${v("notes")}"></label>
     </div>
-    <label class="check"><input type="checkbox" name="charge" checked> Cobrar membresía ahora</label>
+    <label class="check" ${benefit ? "hidden" : ""}><input type="checkbox" name="charge" checked> Cobrar membresía ahora</label>
     <div data-charge class="stack">
-      ${planPick("mensual")}
-      <div class="grid-form"><label class="field"><span>Monto</span><input class="input" name="amount" type="number" min="0" step="0.01"></label>
+      ${planPick(benefit?.type === "premio" ? list[0].id : "mensual", list)}
+      <div class="grid-form"><label class="field"><span>Monto</span><input class="input" name="amount" type="number" min="0" step="0.01" ${benefit ? "readonly" : ""}></label>
       <div class="field"><span>Forma de pago</span>${payPick()}</div></div>
       <div class="summary-box" data-sum></div>
     </div>`;
   body.querySelector("[data-photo]").replaceWith(photoField());
-  const m = modal({ title: "Nuevo socio", wide: true, body, foot: `<button class="btn ghost" data-close>Cancelar</button><button class="btn primary" data-save>${icon("check")} Registrar socio</button>` });
+  const m = modal({ title: benefit ? "Inscribir desde Lista Rival" : "Nuevo socio", wide: true, body, foot: `<button class="btn ghost" data-close>Cancelar</button><button class="btn primary" data-save>${icon("check")} Registrar socio</button>` });
   wirePay(body);
+  const findPlan = (id) => list.find((p) => p.id === id);
   const sync = () => {
-    const p = planById(body.querySelector("[name=plan]:checked")?.value);
+    const p = findPlan(body.querySelector("[name=plan]:checked")?.value);
     if (!p) return;
-    if (!body.amount.dataset.touched) body.amount.value = p.price;
+    if (!body.amount.dataset.touched) body.amount.value = priceWith(p, benefit);
     const per = renewalPeriod(null, p.days);
-    body.querySelector("[data-sum]").innerHTML = `<div class="row"><span class="muted">Vigencia</span><b>${fmtDate(per.start)} → ${fmtDate(per.end)}</b></div><div class="row"><span class="muted">Total</span><span class="total">${fmtMoney(body.amount.value)}</span></div>`;
+    body.querySelector("[data-sum]").innerHTML = `<div class="row"><span class="muted">Vigencia</span><b>${fmtDate(per.start)} → ${fmtDate(per.end)}</b></div>
+      ${benefit?.type === "premio" ? `<div class="row"><span class="muted">Premio</span><b style="color:var(--ok)">${esc(prizeLabel(benefit.prizeDays))} sin costo</b></div>` : benefit ? `<div class="row"><span class="muted">Precio normal</span><s class="mono dim">${fmtMoney(p.price)}</s></div><div class="row"><span class="muted">${esc(benefitLabel(benefit))}</span><b class="mono" style="color:var(--ok)">−${fmtMoney(p.price - Number(body.amount.value))}</b></div>` : ""}
+      <div class="row"><span class="muted">Total</span><span class="total">${fmtMoney(body.amount.value)}</span></div>`;
   };
   body.amount.addEventListener("input", () => { body.amount.dataset.touched = 1; sync(); });
   body.addEventListener("change", (e) => { if (e.target.name === "plan") { delete body.amount.dataset.touched; sync(); } if (e.target.name === "charge") body.querySelector("[data-charge]").hidden = !e.target.checked; });
@@ -129,7 +168,9 @@ export function newMember() {
     if (!f.firstName) { toast("El nombre es obligatorio.", "warn"); body.firstName.focus(); return; }
     const charge = body.charge.checked;
     try {
-      const mem = await createMember(f, charge ? { plan: planById(f.plan), amount: f.amount, method: f.method } : null);
+      const note = benefit ? `Lista Rival · ${benefitLabel(benefit)}${benefit.referredBy ? ` · ${benefit.referredBy}` : ""}` : "";
+      const mem = await createMember(f, charge ? { plan: findPlan(f.plan), amount: f.amount, method: f.method, note, benefit } : null);
+      await markListUsed(benefit, mem.code);
       m.close();
       toast(`${mem.firstName} registrado con ID ${mem.code}. ID de huella: ${mem.fingerprintId}.`, "ok", "Socio creado");
       memberDetail(mem.code, { justCreated: true });
@@ -229,25 +270,29 @@ function editMember(code) {
 }
 
 // ---------- Renovar suscripción ----------
-export async function renewDialog(code) {
+export async function renewDialog(code, benefit = null) {
   let mm = code ? await getMember(code) : await pickMember("Renovar suscripción · elige al socio");
   if (!mm) return;
+  const list = plansFor(benefit);
+  const findPlan = (id) => list.find((p) => p.id === id);
   const body = document.createElement("form");
   body.className = "stack";
   const st = statusOf(mm);
-  body.innerHTML = `<div class="row"><div class="avatar">${mm.photo ? `<img src="${esc(mm.photo)}" alt="">` : esc(initials(fullName(mm)))}</div><div class="grow"><b>${esc(fullName(mm))}</b><div class="dim xs mono">${esc(mm.code)} · ${esc(mm.planName || "Sin plan")} · vence ${fmtDate(mm.end)}</div></div><span class="badge ${st.allowed ? (st.code === "por_vencer" ? "warn" : "ok") : "bad"}">${esc(st.label)}</span></div>
-    ${planPick(mm.plan && mm.plan !== "visita" ? mm.plan : "mensual")}
-    <div class="grid-form"><label class="field"><span>Monto</span><input class="input" name="amount" type="number" min="0" step="0.01"></label><div class="field"><span>Forma de pago</span>${payPick()}</div>
+  body.innerHTML = `${benefitBox(benefit)}<div class="row"><div class="avatar">${mm.photo ? `<img src="${esc(mm.photo)}" alt="">` : esc(initials(fullName(mm)))}</div><div class="grow"><b>${esc(fullName(mm))}</b><div class="dim xs mono">${esc(mm.code)} · ${esc(mm.planName || "Sin plan")} · vence ${fmtDate(mm.end)}</div></div><span class="badge ${st.allowed ? (st.code === "por_vencer" ? "warn" : "ok") : "bad"}">${esc(st.label)}</span></div>
+    ${planPick(benefit?.type === "premio" ? list[0].id : mm.plan && mm.plan !== "visita" && findPlan(mm.plan) ? mm.plan : "mensual", list)}
+    <div class="grid-form"><label class="field"><span>Monto</span><input class="input" name="amount" type="number" min="0" step="0.01" ${benefit ? "readonly" : ""}></label><div class="field"><span>Forma de pago</span>${payPick()}</div>
     <label class="field full"><span>Nota (opcional)</span><input class="input" name="note" placeholder="Descuento, promoción, etc."></label></div>
     <div class="summary-box" data-sum></div>`;
   const m = modal({ title: "Renovar suscripción", wide: true, body, foot: `<button class="btn ghost" data-close>Cancelar</button><button class="btn primary" data-save>${icon("check")} Cobrar y renovar</button>` });
   wirePay(body);
   const sync = () => {
-    const p = planById(body.querySelector("[name=plan]:checked")?.value);
+    const p = findPlan(body.querySelector("[name=plan]:checked")?.value);
     if (!p) return;
-    if (!body.amount.dataset.touched) body.amount.value = p.price;
+    if (!body.amount.dataset.touched) body.amount.value = priceWith(p, benefit);
     const per = renewalPeriod(mm.end, p.days);
-    body.querySelector("[data-sum]").innerHTML = `<div class="row"><span class="muted">Nuevo periodo</span><b>${fmtDate(per.start)} → ${fmtDate(per.end)}</b></div>${mm.end && mm.end >= ymd() ? `<div class="dim xs">Se suma a partir del vencimiento actual, no pierde días.</div>` : ""}<div class="row"><span class="muted">Total</span><span class="total">${fmtMoney(body.amount.value)}</span></div>`;
+    body.querySelector("[data-sum]").innerHTML = `<div class="row"><span class="muted">Nuevo periodo</span><b>${fmtDate(per.start)} → ${fmtDate(per.end)}</b></div>${mm.end && mm.end >= ymd() ? `<div class="dim xs">Se suma a partir del vencimiento actual, no pierde días.</div>` : ""}
+      ${benefit ? `<div class="row"><span class="muted">${esc(benefitLabel(benefit))}</span><b class="mono" style="color:var(--ok)">−${fmtMoney(p.price - Number(body.amount.value))}</b></div>` : ""}
+      <div class="row"><span class="muted">Total</span><span class="total">${fmtMoney(body.amount.value)}</span></div>`;
   };
   body.amount.addEventListener("input", () => { body.amount.dataset.touched = 1; sync(); });
   body.addEventListener("change", (e) => { if (e.target.name === "plan") { delete body.amount.dataset.touched; sync(); } });
@@ -255,7 +300,9 @@ export async function renewDialog(code) {
   m.$("[data-save]").onclick = () => busy(m.$("[data-save]"), async () => {
     const f = formData(body);
     try {
-      const r = await sellPlan(mm.code, planById(f.plan), { amount: f.amount, method: f.method, note: f.note });
+      const note = [benefit ? `Lista Rival · ${benefitLabel(benefit)}` : "", f.note].filter(Boolean).join(" · ");
+      const r = await sellPlan(mm.code, findPlan(f.plan), { amount: f.amount, method: f.method, note, benefit });
+      await markListUsed(benefit, mm.code);
       toast(`${fullName(mm)} vigente hasta ${fmtDate(r.end)}.`, "ok", "Renovación registrada");
       m.close();
     } catch (e) { console.error(e); toast(authError(e), "bad"); }
@@ -316,26 +363,40 @@ export function visitDialog() {
 }
 
 // ---------- Solicitud de insumos ----------
+const UNITS = ["piezas", "paquetes", "cajas", "botellas", "litros", "rollos", "galones", "bolsas"];
+const lineRow = (l = {}) => `<div class="row req-line" data-line><input class="input grow" data-k="name" placeholder="Artículo" value="${esc(l.name || "")}">
+  <input class="input" data-k="qty" type="number" min="1" value="${l.qty || 1}" style="width:84px"><select class="input" data-k="unit" style="width:120px">${UNITS.map((u) => `<option ${u === l.unit ? "selected" : ""}>${u}</option>`).join("")}</select>
+  <button type="button" class="btn ghost icon" data-del-line aria-label="Quitar">${icon("x")}</button></div>`;
+
 export function requestDialog(prefill = {}) {
-  const common = ["Toallas de papel", "Papel higiénico", "Jabón para manos", "Limpiador multiusos", "Desinfectante", "Bolsas de basura", "Guantes de nitrilo", "Gel antibacterial", "Garrafón de agua"];
+  const common = state.app.commonSupplies?.length ? state.app.commonSupplies : ["Toallas de papel", "Papel higiénico", "Jabón para manos", "Limpiador multiusos", "Desinfectante", "Bolsas de basura", "Guantes de nitrilo", "Gel antibacterial", "Garrafón de agua"];
   const body = document.createElement("form");
   body.className = "stack";
-  body.innerHTML = `<div><div class="label" style="margin-bottom:8px">Frecuentes</div><div class="row wrap">${common.map((c) => `<button type="button" class="btn sm" data-c="${esc(c)}">${esc(c)}</button>`).join("")}</div></div>
+  body.innerHTML = `<div><div class="label" style="margin-bottom:8px">Frecuentes (toca para agregar)</div><div class="row wrap">${common.map((c) => `<button type="button" class="btn sm" data-c="${esc(c)}">${esc(c)}</button>`).join("")}</div></div>
+    <div><div class="label" style="margin-bottom:8px">Artículos que necesitas</div><div class="stack" style="gap:8px" data-lines>${lineRow({ name: prefill.item })}</div>
+      <button type="button" class="btn sm" data-add-line style="margin-top:8px">${icon("plus")} Agregar artículo</button></div>
     <div class="grid-form">
-      <label class="field full"><span>¿Qué necesitas? *</span><input class="input" name="item" required value="${esc(prefill.item || "")}"></label>
-      <label class="field"><span>Cantidad</span><input class="input" name="qty" type="number" min="1" value="1"></label>
-      <label class="field"><span>Unidad</span><select class="input" name="unit"><option>piezas</option><option>paquetes</option><option>cajas</option><option>botellas</option><option>litros</option><option>rollos</option></select></label>
       <label class="field"><span>Prioridad</span><select class="input" name="priority"><option value="normal">Normal</option><option value="alta">Urgente</option><option value="baja">Cuando se pueda</option></select></label>
-      <label class="field"><span>Área</span><input class="input" name="area" placeholder="Recepción, baños…"></label>
+      <label class="field"><span>Área</span><input class="input" name="area" placeholder="Recepción, baños…" value="Recepción"></label>
       <label class="field full"><span>Nota</span><input class="input" name="note" placeholder="Detalles para bodega"></label>
     </div>`;
-  const m = modal({ title: "Pedir insumos a bodega", body, foot: `<button class="btn ghost" data-close>Cancelar</button><button class="btn primary" data-save>${icon("send")} Enviar solicitud</button>` });
-  body.querySelectorAll("[data-c]").forEach((b) => b.onclick = () => { body.item.value = b.dataset.c; body.qty.focus(); });
+  const m = modal({ title: "Pedir insumos a bodega", wide: true, body, foot: `<button class="btn ghost" data-close>Cancelar</button><button class="btn primary" data-save>${icon("send")} Enviar solicitud</button>` });
+  const lines = body.querySelector("[data-lines]");
+  body.querySelectorAll("[data-c]").forEach((b) => b.onclick = () => {
+    const empty = [...lines.querySelectorAll("[data-k=name]")].find((i) => !i.value.trim());
+    if (empty) empty.value = b.dataset.c; else lines.insertAdjacentHTML("beforeend", lineRow({ name: b.dataset.c }));
+  });
+  body.querySelector("[data-add-line]").onclick = () => { lines.insertAdjacentHTML("beforeend", lineRow()); lines.lastElementChild.querySelector("input").focus(); };
+  lines.addEventListener("click", (e) => { const d = e.target.closest("[data-del-line]"); if (d && lines.children.length > 1) d.closest("[data-line]").remove(); });
   const send = () => busy(m.$("[data-save]"), async () => {
     const f = formData(body);
-    if (!f.item) return toast("Escribe qué necesitas.", "warn");
+    const items = [...lines.querySelectorAll("[data-line]")].map((r) => ({
+      name: r.querySelector("[data-k=name]").value.trim(), qty: Math.max(1, Number(r.querySelector("[data-k=qty]").value) || 1), unit: r.querySelector("[data-k=unit]").value,
+    })).filter((i) => i.name);
+    if (!items.length) return toast("Agrega al menos un artículo.", "warn");
     await addDoc(collection(db, "requests"), {
-      item: f.item, qty: Number(f.qty) || 1, unit: f.unit, priority: f.priority, area: f.area, note: f.note,
+      items, item: reqTitle(items), qty: items.reduce((s, i) => s + i.qty, 0), unit: items.length === 1 ? items[0].unit : "artículos",
+      priority: f.priority, area: f.area, note: f.note,
       status: "pendiente", createdBy: state.profile.uid, createdByName: state.profile.name, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
     });
     toast("Insumos recibirá una notificación.", "ok", "Solicitud enviada");
@@ -343,6 +404,143 @@ export function requestDialog(prefill = {}) {
   });
   m.$("[data-save]").onclick = send;
   body.addEventListener("submit", (e) => { e.preventDefault(); send(); });
+}
+
+// ---------- Confirmar lo que llegó de bodega (alimenta el inventario de recepción) ----------
+export async function confirmReceipt(id) {
+  const snap = await getDoc(doc(db, "requests", id));
+  if (!snap.exists()) return toast("La solicitud ya no existe.", "warn");
+  const r = snap.data();
+  if (r.status !== "entregada") return toast("Esta solicitud no está pendiente de confirmar.", "info");
+  const items = reqItems(r);
+  const body = document.createElement("form");
+  body.className = "stack";
+  body.innerHTML = `<p class="muted small" style="margin:0">Insumos (${esc(r.takenByName || "bodega")}) marcó esta solicitud como entregada. Palomea lo que <b>sí</b> recibiste y confirma la cantidad. Lo recibido se suma solo al <b>inventario de recepción</b>.</p>
+    <div class="card checklist" style="padding:6px 16px">${items.map((it, i) => `<div class="ck-row" data-i="${i}">
+      <label class="check"><input type="checkbox" data-ok checked><span><b>${esc(it.name)}</b><div class="dim xs">Pediste ${it.qty} ${esc(it.unit || "")}${it.delivered != null ? ` · bodega entregó ${it.delivered}` : ""}</div></span></label>
+      <div class="row"><input class="input mono" type="number" min="0" data-qty value="${it.delivered ?? it.qty}" style="width:90px;min-height:38px"><span class="dim xs" style="width:60px">${esc(it.unit || "")}</span></div></div>`).join("")}</div>
+    <label class="field"><span>Comentario (opcional)</span><input class="input" name="note" placeholder="Ej. llegó una caja abierta"></label>
+    <div class="summary-box" data-sum></div>`;
+  const m = modal({ title: `Confirmar recepción · ${reqTitle(items)}`, wide: true, body, foot: `<button class="btn ghost" data-close>Después</button><button class="btn primary" data-save>${icon("check")} Confirmar y cargar a inventario</button>` });
+  const read = () => [...body.querySelectorAll("[data-i]")].map((row) => {
+    const it = items[row.dataset.i];
+    const ok = row.querySelector("[data-ok]").checked;
+    return { name: it.name, unit: it.unit || "", requested: it.qty, delivered: it.delivered ?? it.qty, received: ok ? Math.max(0, Number(row.querySelector("[data-qty]").value) || 0) : 0 };
+  });
+  const paint = () => {
+    const rows = read(), missing = rows.filter((x) => x.received < x.delivered);
+    body.querySelector("[data-sum]").innerHTML = `<div class="row"><span class="muted">Artículos recibidos</span><b>${rows.reduce((s, x) => s + x.received, 0)} de ${rows.reduce((s, x) => s + x.delivered, 0)}</b></div>${missing.length ? `<div class="row" style="color:var(--warn)"><span>Faltante</span><b>${esc(missing.map((x) => `${x.delivered - x.received} ${x.name}`).join(", "))}</b></div><div class="dim xs">Se avisará a insumos y al dueño que la entrega llegó incompleta.</div>` : `<div class="dim xs" style="color:var(--ok)">Todo completo.</div>`}`;
+  };
+  body.addEventListener("input", paint); body.addEventListener("change", paint); paint();
+  m.$("[data-save]").onclick = () => busy(m.$("[data-save]"), async () => {
+    const rows = read();
+    const incomplete = rows.some((x) => x.received < x.delivered);
+    const b = writeBatch(db);
+    b.update(doc(db, "requests", id), {
+      status: "recibida", receivedItems: rows, incomplete, receiveNote: body.note.value.trim(),
+      receivedBy: state.profile.uid, receivedByName: state.profile.name, receivedAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    });
+    rows.filter((x) => x.received > 0).forEach((x) => {
+      b.set(doc(db, "receptionInventory", itemSlug(x.name)), { name: x.name, unit: x.unit, qty: increment(x.received), lastIn: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
+      b.set(doc(collection(db, "receptionMoves")), { type: "entrada", name: x.name, unit: x.unit, qty: x.received, requestId: id, note: "Entrega de bodega", by: state.profile.uid, byName: state.profile.name, at: serverTimestamp() });
+    });
+    await b.commit();
+    toast(incomplete ? "Recepción confirmada con faltantes; se avisó a insumos." : "Recepción confirmada y cargada al inventario.", incomplete ? "warn" : "ok");
+    m.close();
+  });
+}
+
+// ---------- Lista Rival (recepción: solo consulta e inscribe) ----------
+export async function rivalListDialog() {
+  const s = await getDocs(collection(db, "rivalList"));
+  const rows = s.docs.map((d) => ({ id: d.id, ...d.data() })).filter((e) => e.active !== false).sort((a, b) => a.fullName.localeCompare(b.fullName));
+  const body = document.createElement("div");
+  body.className = "stack";
+  body.innerHTML = `<div class="search" style="position:relative">${icon("search")}<input class="input" placeholder="Buscar por nombre o quién lo registró" style="padding-left:40px"></div><div class="list" style="max-height:420px;overflow:auto" data-l></div>`;
+  body.querySelector(".search svg").style.cssText = "position:absolute;left:12px;top:50%;transform:translateY(-50%);width:18px;color:var(--text-3)";
+  const paint = (q = "") => {
+    const n = q.toLowerCase();
+    body.querySelector("[data-l]").innerHTML = rows.filter((e) => !n || `${e.fullName} ${e.referredBy} ${e.concept}`.toLowerCase().includes(n)).map((e) => {
+      const used = e.benefitType === "premio" && e.enrolledCode;
+      return `<button type="button" class="list-item" data-id="${e.id}" style="background:none;border:0;border-bottom:1px solid var(--line);color:inherit;text-align:left;cursor:pointer;width:100%;${used ? "opacity:.5" : ""}">
+        <span class="li-ico">${icon(e.benefitType === "premio" ? "gift" : "star")}</span>
+        <div class="grow"><b>${esc(e.fullName)}</b><div class="dim xs">${e.referredBy ? `Lo registró ${esc(e.referredBy)} · ` : ""}${esc(CONCEPTS[e.concept] || e.concept || "")}${e.enrolledCode ? ` · socio ${esc(e.enrolledCode)}` : ""}</div></div>
+        <span class="badge ${used ? "plain" : e.benefitType === "descuento" ? "warn" : "ok"}">${esc(used ? "Premio usado" : benefitLabel({ type: e.benefitType, discount: e.discount, prizeDays: e.prizeDays }))}</span></button>`;
+    }).join("") || `<div class="empty">${icon("star")}${rows.length ? "Sin coincidencias." : "El dueño aún no agrega personas a la Lista Rival."}</div>`;
+  };
+  body.querySelector("input").addEventListener("input", (e) => paint(e.target.value));
+  paint();
+  const m = modal({ title: "Lista Rival", wide: true, body, foot: null });
+  body.querySelector("[data-l]").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-id]"); if (!b) return;
+    const e = rows.find((x) => x.id === b.dataset.id);
+    const ben = benefitFrom(e);
+    if (e.benefitType === "premio" && e.enrolledCode) return toast(`El premio ya se aplicó al socio ${e.enrolledCode}.`, "info");
+    m.close();
+    const member = e.enrolledCode && state.members.find((x) => x.code === e.enrolledCode);
+    if (member) renewDialog(member.code, ben);
+    else newMember({ firstName: e.firstName, lastName: e.lastName, phone: e.phone, email: e.email, birthdate: e.birthdate, notes: e.notes }, ben);
+  });
+  setTimeout(() => body.querySelector("input").focus(), 80);
+}
+
+// ---------- Corte de caja del usuario (queda registrado y le llega al dueño) ----------
+export async function cashCutDialog() {
+  const uid = state.profile.uid;
+  const last = await getDocs(query(collection(db, "cashCuts"), where("by", "==", uid), orderBy("at", "desc"), limit(1)));
+  const lastAt = last.docs[0]?.data().at?.toDate?.();
+  const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+  const from = lastAt || t0;
+  const s = await getDocs(query(collection(db, "sales"), where("at", ">", from), orderBy("at", "asc")));
+  const sales = s.docs.map((d) => ({ id: d.id, ...d.data() })).filter((x) => x.by === uid && !x.void);
+  const sum = (a) => Math.round(a.reduce((t, x) => t + (Number(x.amount) || 0), 0) * 100) / 100;
+  const totals = { efectivo: sum(sales.filter((x) => x.method === "efectivo")), tarjeta: sum(sales.filter((x) => x.method === "tarjeta")), transferencia: sum(sales.filter((x) => x.method === "transferencia")) };
+  totals.total = sum(sales);
+  const TYPES = { inscripcion: "Inscripciones", renovacion: "Renovaciones", visita: "Visitas", producto: "Productos" };
+  const byType = Object.fromEntries(Object.keys(TYPES).map((k) => [k, { n: sales.filter((x) => x.type === k).length, amount: sum(sales.filter((x) => x.type === k)) }]));
+  const body = document.createElement("form");
+  body.className = "stack";
+  body.innerHTML = `<div class="row spread"><span class="muted">Desde</span><b>${fmtDateTime(from)}${lastAt ? " (tu último corte)" : " (inicio del día)"}</b></div>
+    <div class="summary-box">${["efectivo", "tarjeta", "transferencia"].map((k) => `<div class="row"><span class="muted" style="text-transform:capitalize">${k}</span><b class="mono">${fmtMoney(totals[k])}</b></div>`).join("")}
+      <div class="row" style="border-top:1px solid var(--line);padding-top:8px"><span>Total vendido (${sales.length})</span><span class="total mono">${fmtMoney(totals.total)}</span></div></div>
+    <div class="summary-box">${Object.entries(TYPES).map(([k, l]) => `<div class="row"><span class="muted">${l}</span><b class="mono">${byType[k].n} · ${fmtMoney(byType[k].amount)}</b></div>`).join("")}</div>
+    <div class="grid-form"><label class="field"><span>Efectivo contado en caja *</span><input class="input mono" name="counted" type="number" step="0.01" min="0" required placeholder="${totals.efectivo}"></label>
+      <label class="field"><span>Comentario</span><input class="input" name="note" placeholder="Opcional"></label></div>
+    <div data-diff class="small"></div>
+    <details><summary class="small muted" style="cursor:pointer">Ver ${sales.length} movimientos</summary><div class="table-wrap" style="max-height:220px;overflow:auto;margin-top:8px"><table class="table"><tbody>${sales.map((x) => `<tr><td class="mono xs">${fmtDateTime(x.at)}</td><td>${esc(x.concept)}</td><td>${esc(x.method)}</td><td class="mono" style="text-align:right">${fmtMoney(x.amount)}</td></tr>`).join("")}</tbody></table></div></details>`;
+  const m = modal({ title: "Hacer corte de caja", wide: true, body, foot: `<button class="btn ghost" data-close>Cancelar</button><button class="btn primary" data-save>${icon("receipt")} Registrar corte</button>` });
+  const paintDiff = () => {
+    const c = body.counted.value === "" ? null : Number(body.counted.value);
+    const d = c == null ? 0 : Math.round((c - totals.efectivo) * 100) / 100;
+    body.querySelector("[data-diff]").innerHTML = c == null ? "" : d === 0 ? `<span style="color:var(--ok)">✓ La caja cuadra.</span>` : `<span style="color:var(--${d < 0 ? "bad" : "warn"})">${d < 0 ? "Faltante" : "Sobrante"} de <b>${fmtMoney(Math.abs(d))}</b> en efectivo.</span>`;
+  };
+  body.counted.addEventListener("input", paintDiff);
+  m.$("[data-save]").onclick = () => busy(m.$("[data-save]"), async () => {
+    if (body.counted.value === "") return toast("Escribe cuánto efectivo contaste en caja.", "warn");
+    const counted = Number(body.counted.value);
+    const ref = await addDoc(collection(db, "cashCuts"), {
+      by: uid, byName: state.profile.name, role: state.profile.role, from, at: serverTimestamp(), day: ymd(),
+      totals, byType, count: sales.length, cashCounted: counted, diff: Math.round((counted - totals.efectivo) * 100) / 100, note: body.note.value.trim(),
+      sales: sales.slice(0, 400).map((x) => ({ concept: x.concept, amount: Number(x.amount) || 0, method: x.method, type: x.type, memberName: x.memberName || "", at: x.at?.toMillis?.() || null })),
+    });
+    toast(`Corte registrado: ${fmtMoney(totals.total)}. El dueño ya puede verlo.`, "ok", "Corte de caja");
+    m.close();
+    printCut({ byName: state.profile.name, from, at: new Date(), totals, byType, count: sales.length, cashCounted: counted, diff: counted - totals.efectivo, note: body.note.value.trim(), id: ref.id });
+  });
+}
+
+export function printCut(c) {
+  const w = open("", "_blank", "width=420,height=680");
+  if (!w) return toast("Permite ventanas emergentes para imprimir el corte.", "warn");
+  const TYPES = { inscripcion: "Inscripciones", renovacion: "Renovaciones", visita: "Visitas", producto: "Productos" };
+  const row = (a, b) => `<div class="r"><span>${a}</span><b>${b}</b></div>`;
+  w.document.write(`<html><head><title>Corte de caja</title><style>body{font:13px system-ui;padding:18px;color:#000}h2{margin:0 0 4px}.r{display:flex;justify-content:space-between;padding:3px 0}.box{border:1px dashed #999;padding:8px 12px;margin:8px 0}</style></head><body>
+    <h2>RIVAL · Corte de caja</h2><div>${esc(c.byName)} · ${fmtDateTime(c.at)}</div><div>Desde ${fmtDateTime(c.from)}</div>
+    <div class="box">${row("Efectivo", fmtMoney(c.totals.efectivo))}${row("Tarjeta", fmtMoney(c.totals.tarjeta))}${row("Transferencia", fmtMoney(c.totals.transferencia))}${row(`<b>Total (${c.count})</b>`, fmtMoney(c.totals.total))}</div>
+    <div class="box">${Object.entries(TYPES).map(([k, l]) => row(l, `${c.byType?.[k]?.n || 0} · ${fmtMoney(c.byType?.[k]?.amount || 0)}`)).join("")}</div>
+    <div class="box">${row("Efectivo contado", fmtMoney(c.cashCounted))}${row(c.diff < 0 ? "Faltante" : c.diff > 0 ? "Sobrante" : "Diferencia", fmtMoney(Math.abs(c.diff)))}</div>
+    ${c.note ? `<p>Nota: ${esc(c.note)}</p>` : ""}<p style="margin-top:36px">Entregó: __________________ &nbsp; Recibió: __________________</p></body></html>`);
+  w.document.close(); w.focus(); w.print();
 }
 
 export async function manualOpen() {

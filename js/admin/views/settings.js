@@ -52,6 +52,7 @@ export async function render(el) {
       <button type="button" class="btn sm" data-add-plan style="margin-top:12px">${icon("plus")} Agregar plan</button>${saveBar()}`,
     operacion: () => `<div class="grid-form">
       <label class="field"><span>Avisar “por vencer” con cuántos días</span><input class="input" type="number" min="0" max="15" name="warnDays" value="${app().warnDays ?? 3}"></label>
+      <label class="field"><span>Tolerancia de retardo del personal (minutos)</span><input class="input" type="number" min="0" max="60" name="lateTolerance" value="${app().lateTolerance ?? 10}"></label>
       <label class="field"><span>Horario de la gráfica (abre – cierra)</span><div class="row"><input class="input" type="number" min="0" max="23" name="openHour" value="${pub().openHour ?? 5}"><input class="input" type="number" min="1" max="23" name="closeHour" value="${pub().closeHour ?? 23}"></div></label>
       <label class="row full" style="justify-content:space-between"><span><b>Registrar asistencia al iniciar sesión</b><br><span class="dim small">Además de la huella, marca la entrada del empleado cuando entra al panel.</span></span><span class="switch"><input type="checkbox" name="attendanceOnLogin" ${app().attendanceOnLogin !== false ? "checked" : ""}><i></i></span></label>
       <label class="row full" style="justify-content:space-between"><span><b>El personal abre el torniquete con su huella</b><br><span class="dim small">Si se desactiva, la huella del personal solo registra asistencia.</span></span><span class="switch"><input type="checkbox" name="staffOpensTurnstile" ${app().staffOpensTurnstile !== false ? "checked" : ""}><i></i></span></label>
@@ -104,6 +105,7 @@ export async function render(el) {
       }
       if (tab === "operacion") {
         A.warnDays = Number(val("warnDays")) || 0; P.warnDays = A.warnDays;
+        A.lateTolerance = Math.max(0, Number(val("lateTolerance")) || 0);
         A.attendanceOnLogin = form.attendanceOnLogin.checked; A.staffOpensTurnstile = form.staffOpensTurnstile.checked;
         A.products = val("products").split("\n").map((l) => l.split("=")).filter((p) => p[0]?.trim()).map(([n, p]) => ({ name: n.trim(), price: Number(p) || 0 }));
         P.openHour = Math.min(23, Number(val("openHour")) || 5); P.closeHour = Math.min(23, Math.max(P.openHour + 1, Number(val("closeHour")) || 23));
