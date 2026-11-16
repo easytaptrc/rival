@@ -248,7 +248,7 @@ export async function askNotifications() {
 /** Notificación del sistema (vía service worker para que funcione también con la app en segundo plano). */
 export async function notify(title, body, { tag, url, silent = false } = {}) {
   if (!silent) beep();
-  navigator.vibrate?.([120, 60, 120]);
+  if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.([120, 60, 120]);
   if (notifPermission() !== "granted") return;
   const opts = { body, tag, renotify: !!tag, icon: "assets/img/icon-192.png", badge: "assets/img/badge-96.png", data: { url: url || location.href } };
   try {

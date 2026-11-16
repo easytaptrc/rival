@@ -39,7 +39,7 @@ export const USING_EMULATOR = isLocal && !!localStorage.getItem("rival.emu");
 
 let _db;
 try {
-  _db = initializeFirestore(app, USING_EMULATOR ? {} : { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+  _db = initializeFirestore(app, USING_EMULATOR && !window.rivalDesktop ? {} : { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
 } catch {
   _db = initializeFirestore(app, {});
 }
@@ -57,6 +57,19 @@ export async function secondaryAuth() {
   const a = getAuth(sec);
   if (USING_EMULATOR) connectAuthEmulator(a, "http://127.0.0.1:9099", { disableWarnings: true });
   return { auth: a, dispose: () => deleteApp(sec).catch(() => {}) };
+}
+
+/**
+ * Cliente aislado para el panel de socios: su sesión NO se mezcla con la del personal
+ * aunque ambos usen la misma computadora, y no deja datos en caché local.
+ */
+export const MEMBER_DOMAIN = "socios.rival.app";
+export function memberClient() {
+  const m = initializeApp(firebaseConfig, "socios");
+  const a = getAuth(m);
+  const d = initializeFirestore(m, {});
+  if (USING_EMULATOR) { connectAuthEmulator(a, "http://127.0.0.1:9099", { disableWarnings: true }); connectFirestoreEmulator(d, "127.0.0.1", 8080); }
+  return { auth: a, db: d };
 }
 
 export {

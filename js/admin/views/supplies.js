@@ -5,11 +5,11 @@ import { db, collection, query, orderBy, limit, onSnapshot, doc, updateDoc, serv
 import { mountReceptionInventory } from "../recinv.js";
 import * as D from "../dialogs.js";
 
-export async function render(el, { profile }) {
+export async function render(el, { profile, perms }) {
   let filter = "abiertas", tab = "solicitudes", all = [], cleanupTab = null;
   el.innerHTML = `
     <div class="page-head fade-in"><div><div class="eyebrow">Bodega</div><h1>Insumos</h1><p>Pide a bodega, confirma lo que te llega y lleva el inventario de recepción</p></div>
-      <div class="row wrap"><a class="btn" href="insumos.html" target="_blank" rel="noopener">${icon("box")} Portal de insumos</a><button class="btn primary" data-new>${icon("plus")} Nueva solicitud</button></div></div>
+      <div class="row wrap">${perms.has("maintenance") ? `<a class="btn" href="insumos.html" target="_blank" rel="noopener">${icon("box")} Portal de insumos</a>` : ""}<button class="btn primary" data-new>${icon("plus")} Nueva solicitud</button></div></div>
     <div class="seg fade-in" data-tabs style="justify-self:start"><button class="on" data-t="solicitudes">Solicitudes</button><button data-t="inventario">Inventario recepción</button></div>
     <div data-body></div>`;
   const body = el.querySelector("[data-body]");

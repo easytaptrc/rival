@@ -1,9 +1,10 @@
 // Panel de control RIVAL: sesión, navegación por permisos, avisos en tiempo real.
-import { db, collection, query, orderBy, limit, onSnapshot, doc } from "../firebase.js";
+import { db, collection, query, orderBy, limit, onSnapshot, doc, getDoc, setDoc, writeBatch, serverTimestamp } from "../firebase.js";
 import { $, $$, h, esc, icon, brandMark, applyTheme, applyCachedTheme, initials, toast, registerSW, notify, notifPermission, askNotifications, setBadge, fmtDate, toDate, beep } from "../core/ui.js";
 import { mountAuth, permsOf, ROLES, logout, recordAttendance } from "../core/auth.js";
 import { registerPush } from "../core/push.js";
-import { state, startSync, onState, statusOf, fullName } from "./data.js";
+import { state, startSync, onState, statusOf, fullName, isOffline } from "./data.js";
+import { startDesktop } from "./desktop.js";
 
 applyCachedTheme();
 registerSW();
@@ -19,11 +20,13 @@ const ROUTES = [
   { id: "personal", label: "Personal", ico: "staff", perm: "staff", mod: () => import("./views/staff.js") },
   { id: "reportes", label: "Reportes", ico: "chart", perm: "reports", mod: () => import("./views/reports.js") },
   { id: "lista", label: "Lista gym", ico: "star", ownerOnly: true, mod: () => import("./views/rivallist.js") },
+  { id: "ejercicios", label: "Ejercicios", ico: "dumbbell", managerOnly: true, mod: () => import("./views/exercises.js") },
   { id: "configuracion", label: "Configuración", ico: "settings", perm: "settings", mod: () => import("./views/settings.js") },
+  { id: "equipo", label: "Huella e impresora", ico: "finger", managerOnly: true, desktopOnly: true, mod: () => import("./views/device.js") },
 ];
 
 const root = $("#app");
-let stopSync, cleanupView, perms, unsubs = [];
+let stopSync, stopDesktop, cleanupView, perms, unsubs = [];
 
 mountAuth({
   root,
@@ -32,7 +35,7 @@ mountAuth({
   heroText: "Tu gimnasio, bajo control.",
   allow: (p) => ["dueno", "gerente", "recepcion"].includes(p.role) || permsOf(p).has("dashboard") || permsOf(p).has("reception"),
   onReady: start,
-  onSignedOut: () => { stopSync?.(); unsubs.forEach((u) => u()); unsubs = []; cleanupView?.(); },
+  onSignedOut: () => { stopSync?.(); stopDesktop?.(); stopDesktop = null; unsubs.forEach((u) => u()); unsubs = []; cleanupView?.(); },
 });
 
 async function start(profile) {
@@ -46,6 +49,9 @@ async function start(profile) {
   watchRequests();
   watchDevice();
   watchCashCuts();
+  watchNetwork();
+  seedExercises(profile);
+  stopDesktop = await startDesktop().catch((e) => { console.error("escritorio", e); return null; });
   onState((w) => { if (w === "pub") applyTheme(state.pub.colors || {}); });
   if (notifPermission() === "granted") registerPush(profile);
   // Asistencia automática al iniciar sesión (una vez por día y por usuario)
@@ -61,7 +67,15 @@ async function start(profile) {
   }, 1500);
 }
 
-function allowedRoutes() { return ROUTES.filter((r) => (r.ownerOnly ? state.profile.role === "dueno" : perms.has(r.perm))); }
+function allowedRoutes() {
+  const role = state.profile.role;
+  return ROUTES.filter((r) => {
+    if (r.desktopOnly && !window.rivalDesktop) return false;
+    if (r.ownerOnly) return role === "dueno";
+    if (r.managerOnly) return ["dueno", "gerente"].includes(role);
+    return perms.has(r.perm);
+  });
+}
 
 function renderShell() {
   const p = state.profile;
@@ -72,7 +86,7 @@ function renderShell() {
       <div class="side-label">Gestión</div>
       ${routes.map((r) => `<a class="nav-item" href="#/${r.id}" data-route="${r.id}">${icon(r.ico)}<span>${r.label}</span>${r.id === "insumos" ? `<span class="count" data-req-count hidden></span>` : ""}</a>`).join("")}
       <div class="side-label">Vistas independientes</div>
-      <a class="nav-item" href="index.html" target="_blank" rel="noopener">${icon("chevron")}<span>Portal de socios</span></a>
+      <a class="nav-item" href="portal.html" target="_blank" rel="noopener">${icon("chevron")}<span>Portal de socios</span></a>
       ${perms.has("maintenance") ? `<a class="nav-item" href="insumos.html" target="_blank" rel="noopener">${icon("chevron")}<span>Mantenimiento</span></a>` : ""}
       <div class="side-foot">
         <div class="sys-card"><div class="row"><span class="dot off" data-dev-dot></span><b data-dev-title>Torniquete</b></div><div class="dim" data-dev-text style="margin-top:4px">Buscando bridge…</div></div>
@@ -221,6 +235,35 @@ function watchRequests() {
     const c = $("[data-req-count]");
     if (c) { c.hidden = !open; c.textContent = open; }
   }, (e) => console.warn("requests", e.code)));
+}
+
+// ---------- Aviso de trabajo sin internet ----------
+function watchNetwork() {
+  const paint = () => {
+    $("#netBanner")?.remove();
+    if (!isOffline()) return;
+    $(".main")?.insertAdjacentHTML("afterbegin", `<div id="netBanner" class="notice" style="border-radius:0;border-width:0 0 1px">${icon("wifi")}<div><b>Sin internet.</b> Sigues trabajando: lo que registres se guarda en este equipo y se sube a Firebase al volver la conexión. Dar de alta socios nuevos requiere internet.</div></div>`);
+  };
+  let was = isOffline();
+  const on = () => { paint(); const now = isOffline(); if (was && !now) toast("Conexión recuperada. Sincronizando con Firebase…", "ok"); was = now; };
+  addEventListener("online", on); addEventListener("offline", on);
+  const off = onState((w) => w === "net" && on());
+  unsubs.push(() => { removeEventListener("online", on); removeEventListener("offline", on); off(); });
+  paint();
+}
+
+// ---------- Catálogo inicial de ejercicios (una sola vez, con la cuenta del dueño) ----------
+async function seedExercises(profile) {
+  if (profile.role !== "dueno" || !navigator.onLine) return;
+  try {
+    const flag = doc(db, "settings", "exercisesSeed");
+    if ((await getDoc(flag)).exists()) return;
+    const { CATALOG } = await import("../core/exercises-catalog.js");
+    const b = writeBatch(db);
+    CATALOG.forEach((x, i) => b.set(doc(db, "exercises", x.id), { ...x, order: i, builtin: true, active: true, updatedAt: serverTimestamp() }));
+    b.set(flag, { at: serverTimestamp(), count: CATALOG.length });
+    await b.commit();
+  } catch (e) { console.warn("catálogo", e.code || e.message); toast("No se pudo cargar el catálogo de ejercicios. Se reintentará la próxima vez que entres.", "warn"); }
 }
 
 // ---------- Cortes de caja: el dueño/gerente ve al instante quién hizo corte, cuánto y a qué hora ----------

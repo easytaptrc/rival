@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>RIVAL · Panel de socios</title>
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#0a0a0c">
+  <link rel="manifest" href="manifest-index.webmanifest">
+  <link rel="icon" href="assets/img/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/admin.css">
+  <style>
+    .sp { width: min(1120px, 100%); margin: 0 auto; padding: 0 16px 48px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+    .sp-top { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; margin: 0 -16px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+    .sp-hero { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+    .sp-hero h1 { font-size: clamp(26px, 4vw, 36px); font-weight: 800; margin-top: 6px; }
+    .ex-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+    .ex { display: grid; text-align: left; padding: 0; overflow: hidden; border-radius: 20px; border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; transition: .25s var(--ease); }
+    .ex:hover { border-color: var(--brand); transform: translateY(-3px); box-shadow: var(--glow); }
+    .ex-media { aspect-ratio: 240 / 210; background: radial-gradient(circle at 50% 30%, #1c1c22, #0d0d10); display: grid; place-items: center; overflow: hidden; }
+    .ex-media img { width: 100%; height: 100%; object-fit: contain; }
+    .ex-body { padding: 14px 16px 16px; display: grid; gap: 4px; }
+    .ex-body b { font-size: 15px; }
+    .ex-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; }
+    .ex-view ol, .ex-view ul { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; color: var(--text-2); }
+    .gate { max-width: 480px; margin: 8vh auto; padding: 32px 26px; text-align: center; display: grid; gap: 16px; justify-items: center; }
+    .gate svg.big { width: 54px; height: 54px; color: var(--bad); }
+    .auth-seg { justify-self: stretch; display: grid; grid-template-columns: 1fr 1fr; }
+    .auth-seg button { text-align: center; }
+    .sp .toolbar .search { min-width: 0; flex: 1 1 200px; max-width: none; }
+    @media (max-width: 720px) { .ex-view { grid-template-columns: 1fr; } .ex-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; } .sp-top .brand-mark .bm-sub { display: none; } .ex-body { padding: 10px 12px 12px; } }
+  </style>
+  <script>try{var t=JSON.parse(localStorage.getItem("rival.theme")||"null");if(t&&t.primary)document.documentElement.style.setProperty("--brand",t.primary);if(t&&t.bg)document.documentElement.style.setProperty("--bg",t.bg)}catch(e){}</script>
+</head>
+<body>
+  <div id="app"><div class="boot"><div class="skeleton" style="width:56px;height:56px;border-radius:16px"></div></div></div>
+  <script type="module" src="js/socios.js"></script>
+</body>
+</html>

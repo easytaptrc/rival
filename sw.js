@@ -1,10 +1,10 @@
 // Service worker RIVAL: caché offline del cascarón de la app, notificaciones y push (FCM opcional).
-const VERSION = "rival-v2";
+const VERSION = "rival-v4";
 const SHELL = [
-  "./", "./index.html", "./admin.html", "./insumos.html",
-  "./css/base.css", "./css/index.css", "./css/admin.css",
+  "./", "./index.html", "./portal.html", "./admin.html", "./insumos.html", "./socios.html",
+  "./css/base.css", "./css/sitio.css", "./css/index.css", "./css/admin.css",
   "./js/firebase.js", "./js/core/ui.js", "./js/core/auth.js", "./js/core/membership.js", "./js/core/push.js",
-  "./js/index.js", "./js/insumos.js", "./js/admin/main.js",
+  "./js/index.js", "./js/sitio.js", "./js/insumos.js", "./js/socios.js", "./js/core/figure.js", "./js/core/supplies.js", "./js/admin/main.js",
   "./assets/img/logo.svg", "./assets/img/icon-192.png", "./assets/img/icon-512.png", "./assets/img/badge-96.png",
   "./assets/img/hero.jpg", "./assets/img/hero-mobile.jpg",
 ];
@@ -21,6 +21,8 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
+  // Videos: directo a la red (piden rangos y pesan demasiado para la caché)
+  if (e.request.headers.has("range") || url.pathname.endsWith(".mp4")) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {

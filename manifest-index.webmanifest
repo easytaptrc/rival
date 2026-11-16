@@ -1,7 +1,7 @@
 {
   "name": "RIVAL Gym",
   "short_name": "RIVAL",
-  "description": "Consulta tu membresía, horarios y ubicación de RIVAL Gym.",
+  "description": "Precios, horarios, coaches y ubicación de RIVAL Gym en Torreón.",
   "id": "./index.html",
   "start_url": "./index.html",
   "scope": "./",

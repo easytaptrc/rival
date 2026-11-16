@@ -11,7 +11,7 @@ export async function render(el) {
   let tab = "gym";
   el.innerHTML = `
     <div class="page-head fade-in"><div><div class="eyebrow">Sistema</div><h1>Configuración</h1><p>Lo que cambies aquí se refleja al instante en el portal de socios</p></div>
-      <div class="row wrap"><a class="btn" href="index.html" target="_blank" rel="noopener">${icon("eye")} Ver portal</a><button class="btn" data-pass>${icon("lock")} Mi contraseña</button></div></div>
+      <div class="row wrap"><a class="btn" href="portal.html" target="_blank" rel="noopener">${icon("eye")} Ver portal</a><button class="btn" data-pass>${icon("lock")} Mi contraseña</button></div></div>
     <div class="seg fade-in" data-tabs style="justify-self:start;overflow-x:auto;max-width:100%">
       <button class="on" data-t="gym">Gimnasio</button><button data-t="redes">Redes y mapa</button><button data-t="colores">Colores</button><button data-t="planes">Planes y precios</button><button data-t="operacion">Operación</button>
     </div>

@@ -4,22 +4,29 @@ import {
   onSnapshot, serverTimestamp, runTransaction, writeBatch, increment,
 } from "../firebase.js";
 import { DEFAULT_PLANS, ymd, renewalPeriod, memberStatus, normalizeMemberCode, memberCodeFromNumber, publicName, STAFF_FINGER_BASE } from "../core/membership.js";
-import { recordAttendance, audit } from "../core/auth.js";
+import { recordAttendance, audit, settled, setOfflineCheck } from "../core/auth.js";
 
 export const state = {
   profile: null,
   app: { plans: DEFAULT_PLANS, warnDays: 3, attendanceOnLogin: true, staffOpensTurnstile: true, currency: "MXN" },
   pub: {},
   members: [],
+  staff: [],
+  relayLocal: false,
+  fromCache: false,
   membersLoaded: false,
 };
 const subs = new Set();
 export const onState = (fn) => (subs.add(fn), () => subs.delete(fn));
 const emit = (what) => subs.forEach((f) => f(what));
+/** Sin conexión real con Firebase. navigator.onLine no basta: el WiFi puede estar conectado sin internet. */
+export const isOffline = () => !navigator.onLine || state.fromCache;
+setOfflineCheck(isOffline);
 
 export function startSync() {
   const unsubs = [];
-  unsubs.push(onSnapshot(doc(db, "settings", "app"), (s) => {
+  unsubs.push(onSnapshot(doc(db, "settings", "app"), { includeMetadataChanges: true }, (s) => {
+    if (state.fromCache !== s.metadata.fromCache) { state.fromCache = s.metadata.fromCache; emit("net"); }
     const d = s.data() || {};
     state.app = { ...state.app, ...d, plans: d.plans?.length ? d.plans : DEFAULT_PLANS };
     emit("app");
@@ -31,6 +38,8 @@ export function startSync() {
       state.membersLoaded = true;
       emit("members");
     }, (e) => console.warn("members", e.code)));
+    // Personal en caché: la huella de un empleado se reconoce también sin internet
+    unsubs.push(onSnapshot(collection(db, "users"), (s) => { state.staff = s.docs.map((d) => ({ uid: d.id, ...d.data() })); }, (e) => console.warn("users", e.code)));
   }
   return () => unsubs.forEach((u) => u());
 }
@@ -49,6 +58,7 @@ function publicDoc(m) {
     start: m.start || null,
     end: m.end || null,
     suspended: !!m.suspended,
+    authGen: m.authGen || 0,
     updatedAt: serverTimestamp(),
   };
 }
@@ -64,6 +74,7 @@ async function nextCode(tx) {
 
 /** Alta de socio. Si trae plan, se cobra la inscripción/primer periodo en la misma transacción. */
 export async function createMember(data, sale) {
+  if (isOffline()) throw new Error("Dar de alta un socio requiere internet para no repetir IDs. Lo demás sigue funcionando sin conexión.");
   return runTransaction(db, async (tx) => {
     const { code, number } = await nextCode(tx);
     const m = {
@@ -90,6 +101,16 @@ export async function createMember(data, sale) {
 
 export async function updateMember(code, patch) {
   const ref = doc(db, "members", code);
+  if (isOffline()) {
+    const cur = state.members.find((m) => m.code === code);
+    if (!cur) throw new Error("El socio no está guardado en este equipo.");
+    const next = { ...cur, ...patch };
+    const b = writeBatch(db);
+    b.update(ref, { ...patch, updatedAt: serverTimestamp() });
+    b.set(doc(db, "publicStatus", code), publicDoc(next));
+    await settled(b.commit());
+    return next;
+  }
   return runTransaction(db, async (tx) => {
     const cur = (await tx.get(ref)).data();
     if (!cur) throw new Error("El socio no existe.");
@@ -103,6 +124,24 @@ export async function updateMember(code, patch) {
 /** Renovación / venta de plan a un socio existente. Encadena el periodo si sigue vigente. */
 export async function sellPlan(code, plan, { amount, method, note = "", benefit = null }) {
   const ref = doc(db, "members", code);
+  if (isOffline()) {
+    // Sin internet no hay transacciones: se usa la copia local y se sincroniza al volver la red
+    const cur = state.members.find((m) => m.code === code);
+    if (!cur) throw new Error("El socio no está guardado en este equipo.");
+    const p = renewalPeriod(cur.end, plan.days);
+    const patch = { plan: plan.id, planName: plan.name, end: p.end, suspended: false, updatedAt: serverTimestamp() };
+    if (!cur.end || cur.end < ymd()) patch.start = p.start;
+    const b = writeBatch(db);
+    b.update(ref, patch);
+    b.set(doc(db, "publicStatus", code), publicDoc({ ...cur, ...patch }));
+    b.set(doc(collection(db, "sales")), {
+      type: cur.end ? "renovacion" : "inscripcion", concept: `${cur.end ? "Renovación" : "Membresía"} · ${plan.name}`,
+      amount: Number(amount) || 0, method, memberCode: code, memberName: fullName(cur),
+      planId: plan.id, periodStart: p.start, periodEnd: p.end, note, benefit, offline: true, day: ymd(), at: serverTimestamp(), ...me(),
+    });
+    await settled(b.commit());
+    return { ...cur, ...patch };
+  }
   return runTransaction(db, async (tx) => {
     const cur = (await tx.get(ref)).data();
     if (!cur) throw new Error("El socio no existe.");
@@ -130,10 +169,10 @@ export async function deleteMember(code) {
 
 // ---------- Ventas ----------
 export async function registerSale({ type = "producto", concept, amount, method, qty = 1, memberCode = null, memberName = "", note = "" }) {
-  return addDoc(collection(db, "sales"), {
+  return settled(addDoc(collection(db, "sales"), {
     type, concept, amount: Number(amount) || 0, qty: Number(qty) || 1, method, memberCode, memberName, note,
     day: ymd(), at: serverTimestamp(), ...me(),
-  });
+  }));
 }
 
 /** Pago de visita: venta + registro de acceso + apertura de torniquete. */
@@ -145,14 +184,20 @@ export async function visitPayment({ name, phone, amount, method, open = true })
 
 // ---------- Accesos y torniquete ----------
 export function logAccess({ kind, ref, name, allowed, status, reason = "", source = "manual", planName = null, end = null }) {
-  return addDoc(collection(db, "access"), {
+  return settled(addDoc(collection(db, "access"), {
     kind, ref, name, result: allowed ? "permitido" : "denegado", status, reason, source, planName, end,
-    day: ymd(), at: serverTimestamp(), by: auth.currentUser?.uid || null, device: "panel",
-  });
+    day: ymd(), at: serverTimestamp(), by: auth.currentUser?.uid || null, device: window.rivalDesktop ? "escritorio" : "panel",
+  }));
 }
 
-export function openTurnstile(reason = "Apertura manual") {
-  return addDoc(collection(db, "turnstileCommands"), { action: "open", reason, done: false, at: serverTimestamp(), ...me() });
+export async function openTurnstile(reason = "Apertura manual") {
+  // En la app de escritorio el relevador se acciona directo: también funciona sin internet
+  if (state.relayLocal && window.rivalDesktop) {
+    const r = await window.rivalDesktop.openRelay(reason);
+    addDoc(collection(db, "turnstileCommands"), { action: "open", reason, done: true, doneAt: serverTimestamp(), ...(r.ok ? {} : { error: String(r.error || "relevador").slice(0, 120) }), at: serverTimestamp(), ...me() }).catch((e) => console.warn("orden", e.code));
+    return r;
+  }
+  return settled(addDoc(collection(db, "turnstileCommands"), { action: "open", reason, done: false, at: serverTimestamp(), ...me() }));
 }
 
 /**
@@ -167,16 +212,19 @@ export async function processScan(raw, source = "huella") {
   // ¿Personal? (EMP-#### o ID de huella >= 9000)
   if (s.startsWith("EMP") || num >= STAFF_FINGER_BASE) {
     const fid = s.startsWith("EMP") ? STAFF_FINGER_BASE + num : num;
-    const snap = await getDocs(query(collection(db, "users"), where("fingerprintId", "==", fid), limit(1)));
-    if (!snap.empty) {
-      const u = { uid: snap.docs[0].id, ...snap.docs[0].data() };
+    let u = state.staff.find((x) => x.fingerprintId === fid);
+    if (!u && !isOffline()) {
+      const snap = await getDocs(query(collection(db, "users"), where("fingerprintId", "==", fid), limit(1)));
+      if (!snap.empty) u = { uid: snap.docs[0].id, ...snap.docs[0].data() };
+    }
+    if (u) {
       if (u.active === false) {
         await logAccess({ kind: "personal", ref: u.uid, name: u.name, allowed: false, status: "inactivo", reason: "Usuario desactivado", source });
         return { kind: "personal", person: u, allowed: false, reason: "Usuario desactivado" };
       }
+      if (state.app.staffOpensTurnstile !== false) openTurnstile(`Personal: ${u.name}`).catch((e) => console.warn("torniquete", e.message));
       const type = await recordAttendance(u, source);
-      await logAccess({ kind: "personal", ref: u.uid, name: u.name, allowed: true, status: type, reason: `Asistencia: ${type}`, source });
-      if (state.app.staffOpensTurnstile !== false) await openTurnstile(`Personal: ${u.name}`);
+      logAccess({ kind: "personal", ref: u.uid, name: u.name, allowed: true, status: type, reason: `Asistencia: ${type}`, source }).catch((e) => console.warn("acceso", e.code));
       return { kind: "personal", person: u, allowed: true, attendance: type };
     }
   }
@@ -184,8 +232,9 @@ export async function processScan(raw, source = "huella") {
   // Socio
   const code = normalizeMemberCode(s);
   let m = code ? state.members.find((x) => x.code === code) : null;
-  if (!m && code) { const d = await getDoc(doc(db, "members", code)); if (d.exists()) m = { id: d.id, ...d.data() }; }
-  if (!m && num) {
+  if (!m && num) m = state.members.find((x) => x.fingerprintId === num) || null;
+  if (!m && code && !isOffline()) { const d = await getDoc(doc(db, "members", code)); if (d.exists()) m = { id: d.id, ...d.data() }; }
+  if (!m && num && !isOffline()) {
     const q = await getDocs(query(collection(db, "members"), where("fingerprintId", "==", num), limit(1)));
     if (!q.empty) m = { id: q.docs[0].id, ...q.docs[0].data() };
   }
@@ -194,9 +243,9 @@ export async function processScan(raw, source = "huella") {
     return { kind: "socio", member: null, allowed: false, reason: "ID no registrado", code };
   }
   const st = statusOf(m);
-  await logAccess({ kind: "socio", ref: m.code, name: fullName(m), allowed: st.allowed, status: st.code, reason: st.label, source, planName: m.planName, end: m.end });
+  if (st.allowed) openTurnstile(`Socio ${m.code}`).catch((e) => console.warn("torniquete", e.message));
+  logAccess({ kind: "socio", ref: m.code, name: fullName(m), allowed: st.allowed, status: st.code, reason: st.label, source, planName: m.planName, end: m.end }).catch((e) => console.warn("acceso", e.code));
   if (st.allowed) {
-    await openTurnstile(`Socio ${m.code}`);
     updateDoc(doc(db, "members", m.code), { lastAccess: serverTimestamp(), visits: increment(1) }).catch(() => {});
   }
   return { kind: "socio", member: m, allowed: st.allowed, status: st, reason: st.label };

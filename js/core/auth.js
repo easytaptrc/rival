@@ -47,6 +47,16 @@ export function permsOf(profile) {
   return base;
 }
 
+/**
+ * Sin internet, Firestore guarda la escritura en local pero su promesa no termina hasta sincronizar.
+ * Esto evita que la pantalla se quede esperando: si tarda, se da por guardada en local.
+ */
+let isOff = () => !navigator.onLine;
+export const setOfflineCheck = (fn) => (isOff = fn);
+export function settled(p, ms = 4000) {
+  return Promise.race([p, new Promise((res) => setTimeout(res, isOff() ? 0 : ms))]);
+}
+
 export async function audit(action, detail = {}) {
   try {
     await addDoc(collection(db, "audit"), { action, detail, uid: auth.currentUser?.uid || null, at: serverTimestamp() });
@@ -61,10 +71,10 @@ export async function recordAttendance(profile, source = "huella", forceType) {
     const last = snap.docs.map((d) => d.data()).sort((a, b) => (b.at?.seconds || 0) - (a.at?.seconds || 0))[0];
     type = last?.type === "entrada" ? "salida" : "entrada";
   }
-  await addDoc(collection(db, "attendance"), {
+  await settled(addDoc(collection(db, "attendance"), {
     uid: profile.uid, name: profile.name, role: profile.role, type, source, day: ymdLocal(), at: serverTimestamp(),
     by: auth.currentUser?.uid || null,
-  });
+  }));
   return type;
 }
 const ymdLocal = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
@@ -76,7 +86,7 @@ const ymdLocal = () => { const d = new Date(); return `${d.getFullYear()}-${Stri
 export function mountAuth({ root, appName, subtitle, heroText, allow, onReady, onSignedOut }) {
   let started = false, bootstrapping = false;
   onAuthStateChanged(auth, async (user) => {
-    if (bootstrapping) return; // la cuenta del due�o se est� creando; a�n no existe su perfil
+    if (bootstrapping) return; // la cuenta del dueño se está creando; aún no existe su perfil
     if (!user) { started = false; onSignedOut?.(); renderLogin(); return; }
     if (started) return;
     try {
@@ -84,7 +94,7 @@ export function mountAuth({ root, appName, subtitle, heroText, allow, onReady, o
       if (!snap.exists()) { await signOut(auth); renderLogin("Tu usuario no tiene perfil asignado. Pide al dueño que lo configure."); return; }
       const profile = { uid: user.uid, ...snap.data() };
       if (profile.active === false) { await signOut(auth); renderLogin("Tu usuario está desactivado."); return; }
-      if (!allow(profile)) { await signOut(auth); renderLogin(`Tu rol (${ROLES[profile.role]?.label || profile.role}) no tiene acceso a ${appName}.`); return; }
+      if (!allow(profile)) { renderLogin(`Tu rol (${ROLES[profile.role]?.label || profile.role}) no tiene acceso a ${appName}.`); return; }
       started = true;
       updateDoc(doc(db, "users", user.uid), { lastLogin: serverTimestamp() }).catch(() => {});
       onReady(profile);

@@ -6,8 +6,9 @@ import { reqItems, reqTitle, reqSummary, itemSlug } from "../core/supplies.js";
 import {
   state, plans, planById, statusOf, fullName, createMember, updateMember, sellPlan, registerSale, visitPayment, deleteMember,
   openTurnstile, db, doc, getDoc, updateDoc, collection, query, where, orderBy, limit, getDocs, addDoc, serverTimestamp,
-  writeBatch, increment,
+  writeBatch, increment, setDoc,
 } from "./data.js";
+import { autoTicket, printerChosen } from "./receipt.js";
 
 // ---------- Beneficios de la Lista Rival ----------
 export const CONCEPTS = { brothers: "Brothers", familia: "Familia", atleta: "Atleta", referencia: "Referencia", otro: "Otro" };
@@ -171,6 +172,7 @@ export function newMember(prefill = {}, benefit = null) {
       const note = benefit ? `Lista Rival · ${benefitLabel(benefit)}${benefit.referredBy ? ` · ${benefit.referredBy}` : ""}` : "";
       const mem = await createMember(f, charge ? { plan: findPlan(f.plan), amount: f.amount, method: f.method, note, benefit } : null);
       await markListUsed(benefit, mem.code);
+      if (charge) autoTicket({ concept: `Inscripción · ${findPlan(f.plan).name}`, amount: f.amount, method: f.method, memberName: `${mem.firstName} ${mem.lastName}`.trim(), memberCode: mem.code, periodStart: mem.start, periodEnd: mem.end, note });
       m.close();
       toast(`${mem.firstName} registrado con ID ${mem.code}. ID de huella: ${mem.fingerprintId}.`, "ok", "Socio creado");
       memberDetail(mem.code, { justCreated: true });
@@ -218,12 +220,14 @@ export async function memberDetail(code, { justCreated = false } = {}) {
       <div><div class="label" style="margin-bottom:8px">Historial de pagos</div><div data-hist class="dim small">Cargando…</div></div>
     </div>`,
     foot: `${canDelete ? `<button class="btn danger" data-del>${icon("trash")} Eliminar</button>` : ""}
+      <button class="btn" data-panel>${icon("user")} Acceso al panel</button>
       <button class="btn" data-suspend>${mm.suspended ? "Reactivar" : "Suspender"}</button>
       <button class="btn" data-finger>${icon("finger")} ${mm.fingerEnrolled ? "Huella OK" : "Marcar huella enrolada"}</button>
       <button class="btn" data-edit>${icon("edit")} Editar</button>
       <button class="btn primary" data-renew>${icon("refresh")} Renovar</button>`,
   });
   m.$("[data-renew]").onclick = () => { m.close(); renewDialog(code); };
+  m.$("[data-panel]").onclick = () => { m.close(); memberAccessDialog(code); };
   m.$("[data-edit]").onclick = () => { m.close(); editMember(code); };
   m.$("[data-finger]").onclick = async () => { await updateMember(code, { fingerEnrolled: !mm.fingerEnrolled }); toast("Estado de huella actualizado.", "ok"); m.close(); };
   m.$("[data-suspend]").onclick = async () => {
@@ -303,6 +307,7 @@ export async function renewDialog(code, benefit = null) {
       const note = [benefit ? `Lista Rival · ${benefitLabel(benefit)}` : "", f.note].filter(Boolean).join(" · ");
       const r = await sellPlan(mm.code, findPlan(f.plan), { amount: f.amount, method: f.method, note, benefit });
       await markListUsed(benefit, mm.code);
+      autoTicket({ concept: `Renovación · ${findPlan(f.plan).name}`, amount: f.amount, method: f.method, memberName: fullName(mm), memberCode: mm.code, periodStart: r.start, periodEnd: r.end, note });
       toast(`${fullName(mm)} vigente hasta ${fmtDate(r.end)}.`, "ok", "Renovación registrada");
       m.close();
     } catch (e) { console.error(e); toast(authError(e), "bad"); }
@@ -336,6 +341,7 @@ export function saleDialog() {
     const f = formData(body);
     if (!f.concept || !total()) return toast("Escribe concepto y precio.", "warn");
     await registerSale({ type: "producto", concept: f.concept, qty: f.qty, amount: total(), method: f.method, memberCode: member?.code || null, memberName: member ? fullName(member) : "" });
+    autoTicket({ concept: f.concept, qty: f.qty, amount: total(), method: f.method, memberName: member ? fullName(member) : "", memberCode: member?.code });
     toast(`${f.concept} · ${fmtMoney(total())}`, "ok", "Venta registrada");
     m.close();
   });
@@ -357,7 +363,7 @@ export function visitDialog() {
   wirePay(body);
   m.$("[data-save]").onclick = () => busy(m.$("[data-save]"), async () => {
     const f = formData(body);
-    try { await visitPayment({ name: f.name, phone: f.phone, amount: f.amount, method: f.method, open: body.open.checked }); toast(`Visita cobrada · ${fmtMoney(f.amount)}`, "ok"); m.close(); }
+    try { await visitPayment({ name: f.name, phone: f.phone, amount: f.amount, method: f.method, open: body.open.checked }); autoTicket({ concept: "Pago de visita", amount: f.amount, method: f.method, memberName: f.name }); toast(`Visita cobrada · ${fmtMoney(f.amount)}`, "ok"); m.close(); }
     catch (e) { toast(authError(e), "bad"); }
   });
 }
@@ -525,12 +531,14 @@ export async function cashCutDialog() {
     });
     toast(`Corte registrado: ${fmtMoney(totals.total)}. El dueño ya puede verlo.`, "ok", "Corte de caja");
     m.close();
-    printCut({ byName: state.profile.name, from, at: new Date(), totals, byType, count: sales.length, cashCounted: counted, diff: counted - totals.efectivo, note: body.note.value.trim(), id: ref.id });
+    if (!window.rivalDesktop || printerChosen()) printCut({ byName: state.profile.name, from, at: new Date(), totals, byType, count: sales.length, cashCounted: counted, diff: counted - totals.efectivo, note: body.note.value.trim(), id: ref.id });
+    else toast("Corte guardado. Elige una impresora en “Huella e impresora” para imprimirlo automáticamente; también puedes imprimirlo desde Ventas y caja.", "info");
   });
 }
 
 export function printCut(c) {
-  const w = open("", "_blank", "width=420,height=680");
+  const desktopApp = window.rivalDesktop;
+  const w = desktopApp ? { document: { write(h) { desktopApp.print(h).then((r) => !r.ok && toast(`No se pudo imprimir: ${r.error}`, "bad")); }, close() {} }, focus() {}, print() {} } : open("", "_blank", "width=420,height=680");
   if (!w) return toast("Permite ventanas emergentes para imprimir el corte.", "warn");
   const TYPES = { inscripcion: "Inscripciones", renovacion: "Renovaciones", visita: "Visitas", producto: "Productos" };
   const row = (a, b) => `<div class="r"><span>${a}</span><b>${b}</b></div>`;
@@ -547,4 +555,38 @@ export async function manualOpen() {
   if (!(await confirmDialog("Se enviará la orden de apertura al torniquete y quedará registrada a tu nombre.", { ok: "Abrir torniquete", title: "Apertura manual" }))) return;
   await openTurnstile("Apertura manual");
   toast("Orden de apertura enviada.", "ok");
+}
+
+// ---------- Acceso del socio a su panel ----------
+const newActivation = () => { const a = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; return [...crypto.getRandomValues(new Uint32Array(8))].map((n) => a[n % a.length]).join(""); };
+
+export async function memberAccessDialog(code) {
+  const mm = await getMember(code);
+  if (!mm) return toast("No se encontró el socio.", "warn");
+  try {
+    const acc = await getDoc(doc(db, "memberAccounts", code));
+    const secRef = doc(db, "memberSecrets", code);
+    if (acc.exists()) {
+      const m = modal({ title: `Panel de ${fullName(mm)}`, body: `<div class="stack"><span class="badge ok" style="justify-self:start">Panel activado</span><p class="muted" style="margin:0">Entra en <b>socios.html</b> con su ID <b class="mono">${esc(code)}</b> y la contraseña que creó. Por seguridad nadie puede ver esa contraseña.</p><p class="dim small" style="margin:0">¿La olvidó? Restablece el acceso: su contraseña anterior deja de servir y recibe un código nuevo para crear otra.</p></div>`,
+        foot: `<button class="btn ghost" data-close>Cerrar</button><button class="btn danger" data-reset>${icon("refresh")} Restablecer acceso</button>` });
+      m.$("[data-reset]").onclick = () => busy(m.$("[data-reset]"), async () => {
+        await updateMember(code, { authGen: (mm.authGen || 0) + 1 });
+        const b = writeBatch(db);
+        b.delete(doc(db, "memberAccounts", code));
+        b.set(secRef, { activation: newActivation(), at: serverTimestamp(), by: state.profile.uid });
+        await b.commit();
+        m.close(); toast("Acceso restablecido.", "ok");
+        memberAccessDialog(code);
+      });
+      return;
+    }
+    const sec = await getDoc(secRef);
+    let activation = sec.data()?.activation;
+    if (!activation) { activation = newActivation(); await setDoc(secRef, { activation, at: serverTimestamp(), by: state.profile.uid }); }
+    const m = modal({ title: `Activar panel de ${fullName(mm)}`, body: `<div class="stack"><p class="muted" style="margin:0">Entrega estos datos al socio. Con ellos crea su propia contraseña en <b>socios.html → Es mi primera vez</b>.</p>
+      <div class="kv"><div><span>ID de socio</span><b class="mono">${esc(code)}</b></div><div><span>Código de activación</span><b class="mono" style="font-size:20px;letter-spacing:.12em">${esc(activation)}</b></div></div>
+      <p class="dim xs" style="margin:0">Trátalo como una contraseña: quien lo tenga puede activar la cuenta de este socio.</p></div>`,
+      foot: `<button class="btn" data-copy>${icon("clipboard")} Copiar</button><button class="btn primary" data-close>Listo</button>` });
+    m.$("[data-copy]").onclick = async () => { await navigator.clipboard?.writeText(`RIVAL Gym · Panel de socios\nID: ${code}\nCódigo de activación: ${activation}`); toast("Copiado.", "ok"); };
+  } catch (e) { console.error(e); toast(navigator.onLine ? authError(e) : "Activar el panel de un socio requiere internet.", "bad"); }
 }
